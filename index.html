@@ -325,6 +325,13 @@ td{padding:9px 13px;font-size:13px}
 
 <div id="toast-wrap"></div>
 
+<!-- LOADING OVERLAY -->
+<div id="loading-overlay" style="display:none;position:fixed;inset:0;background:rgba(255,255,255,.75);z-index:300;align-items:center;justify-content:center;flex-direction:column;gap:12px">
+  <div style="width:36px;height:36px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite"></div>
+  <p id="loading-msg" style="font-size:13px;color:var(--text2)">Cargando...</p>
+</div>
+<style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+
 <script>
 'use strict';
 // ═══════════════════════════════════════════════════════════
@@ -341,15 +348,243 @@ const COLORS=['#2563eb','#16a34a','#b45309','#dc2626','#7c3aed','#0891b2','#db27
 const ROLES={admin:'Administrador',operador:'Operador',lectura:'Solo lectura'};
 
 // ═══════════════════════════════════════════════════════════
-// DB LAYER
+// SUPABASE CONFIG
 // ═══════════════════════════════════════════════════════════
-const DB={
-  get(k){try{return JSON.parse(localStorage.getItem(k))}catch{return null}},
-  set(k,v){localStorage.setItem(k,JSON.stringify(v))},
-  getE(eid,k){try{return JSON.parse(localStorage.getItem(`e_${eid}_${k}`))||[]}catch{return[]}},
-  setE(eid,k,v){localStorage.setItem(`e_${eid}_${k}`,JSON.stringify(v))},
-  cfg(eid){try{return JSON.parse(localStorage.getItem(`e_${eid}_cfg`))||{}}catch{return{}}},
-  setCfg(eid,v){localStorage.setItem(`e_${eid}_cfg`,JSON.stringify(v))},
+const SB_URL = 'https://clejcbqlstrhmvadxsxk.supabase.co';
+const SB_KEY = 'sb_publishable_CD15LcHHlalhnAq6fFoDYA_bf5pyo_S';
+
+// Mapa: clave interna → nombre de tabla en Supabase
+const TABLE_MAP = {
+  empresas:        'empresas',
+  usuarios:        'usuarios',
+  rubros:          'rubros',
+  formas_pago:     'formas_pago',
+  bancos:          'bancos',
+  clientes:        'clientes',
+  proveedores:     'proveedores',
+  productos_venta: 'productos_venta',
+  productos_compra:'productos_compra',
+  facturas_venta:  'facturas_venta',
+  recibos_cobro:   'recibos_cobro',
+  facturas_compra: 'facturas_compra',
+  ordenes_pago:    'ordenes_pago',
+};
+
+// Campos snake_case ↔ camelCase por tabla
+const FIELD_TO_DB = {
+  clientes:        { condicionIva:'condicion_iva', condicionCobro:'condicion_cobro', diasVenc:'dias_venc', serviciosHabituales:'servicios_habituales' },
+  proveedores:     { rubroId:'rubro_id', condicionPago:'condicion_pago', diasVenc:'dias_venc' },
+  productos_compra:{ rubroId:'rubro_id' },
+  bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
+  facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion' },
+  facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
+  recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
+  ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
+  usuarios:        { empresaId:'empresa_id' },
+};
+const FIELD_FROM_DB = {};
+Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
+  FIELD_FROM_DB[tbl] = {};
+  Object.entries(map).forEach(([js, db]) => { FIELD_FROM_DB[tbl][db] = js; });
+});
+
+function toDB(tbl, obj) {
+  const map = FIELD_TO_DB[tbl] || {};
+  const out = {};
+  Object.entries(obj).forEach(([k, v]) => {
+    const dbKey = map[k] || k;
+    out[dbKey] = v;
+  });
+  // empresa_id siempre presente para tablas que lo necesitan
+  if (_empresa && TABLE_MAP[tbl] && tbl !== 'empresas') out.empresa_id = _empresa.id;
+  return out;
+}
+
+function fromDB(tbl, row) {
+  if (!row) return null;
+  const map = FIELD_FROM_DB[tbl] || {};
+  const out = {};
+  Object.entries(row).forEach(([k, v]) => {
+    const jsKey = map[k] || k;
+    out[jsKey] = v;
+  });
+  return out;
+}
+
+// Headers comunes para todas las peticiones
+function sbHeaders(extra={}) {
+  return {
+    'Content-Type': 'application/json',
+    'apikey': SB_KEY,
+    'Authorization': `Bearer ${SB_KEY}`,
+    'Prefer': 'return=representation',
+    ...extra
+  };
+}
+
+// ═══════════════════════════════════════════════════════════
+// DB LAYER — Supabase REST API
+// ═══════════════════════════════════════════════════════════
+const DB = {
+  // ── Cache en memoria para la sesión ──
+  _cache: {},
+  _cacheKey(eid, tbl) { return `${eid}__${tbl}`; },
+  _setCache(eid, tbl, data) { DB._cache[DB._cacheKey(eid, tbl)] = data; },
+  _getCache(eid, tbl) { return DB._cache[DB._cacheKey(eid, tbl)] || null; },
+  _clearCache(eid, tbl) { delete DB._cache[DB._cacheKey(eid, tbl)]; },
+
+  // ── Empresas ──
+  async getEmpresas() {
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/empresas?select=*&order=nombre`, { headers: sbHeaders() });
+      const data = await r.json();
+      if (!Array.isArray(data)) return [];
+      return data.map(e => fromDB('empresas', e));
+    } catch { return []; }
+  },
+
+  async saveEmpresa(obj) {
+    const row = toDB('empresas', obj);
+    delete row.empresa_id;
+    try {
+      await fetch(`${SB_URL}/rest/v1/empresas`, {
+        method: 'POST',
+        headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=representation' }),
+        body: JSON.stringify(row)
+      });
+    } catch(e) { console.error('saveEmpresa', e); }
+  },
+
+  async updateEmpresa(obj) {
+    const row = toDB('empresas', obj);
+    delete row.empresa_id;
+    try {
+      await fetch(`${SB_URL}/rest/v1/empresas?id=eq.${obj.id}`, {
+        method: 'PATCH',
+        headers: sbHeaders(),
+        body: JSON.stringify(row)
+      });
+    } catch(e) { console.error('updateEmpresa', e); }
+  },
+
+  async deleteEmpresa(id) {
+    try {
+      await fetch(`${SB_URL}/rest/v1/empresas?id=eq.${id}`, {
+        method: 'DELETE', headers: sbHeaders()
+      });
+    } catch(e) { console.error('deleteEmpresa', e); }
+  },
+
+  // ── Genérico: getE, setE (upsert), deleteItem ──
+  async getE(eid, tbl) {
+    const cached = DB._getCache(eid, tbl);
+    if (cached) return cached;
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}&select=*`, { headers: sbHeaders() });
+      const data = await r.json();
+      if (!Array.isArray(data)) return [];
+      const mapped = data.map(row => fromDB(tbl, row));
+      DB._setCache(eid, tbl, mapped);
+      return mapped;
+    } catch { return []; }
+  },
+
+  async setE(eid, tbl, items) {
+    // Reemplaza la lista completa: borra todo y reinserta
+    // Para rendimiento usamos upsert + delete de los que ya no están
+    DB._setCache(eid, tbl, items);
+    try {
+      // Borra todos los registros de la empresa para esta tabla
+      await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}`, {
+        method: 'DELETE', headers: sbHeaders()
+      });
+      if (!items.length) return;
+      // Inserta todos
+      const rows = items.map(item => {
+        const row = toDB(tbl, item);
+        row.empresa_id = eid;
+        return row;
+      });
+      await fetch(`${SB_URL}/rest/v1/${tbl}`, {
+        method: 'POST',
+        headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(rows)
+      });
+    } catch(e) { console.error('setE', tbl, e); }
+  },
+
+  // Upsert de un solo item (más eficiente que reescribir toda la tabla)
+  async upsertItem(eid, tbl, item) {
+    try {
+      const row = toDB(tbl, item);
+      row.empresa_id = eid;
+      await fetch(`${SB_URL}/rest/v1/${tbl}`, {
+        method: 'POST',
+        headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify(row)
+      });
+      DB._clearCache(eid, tbl);
+    } catch(e) { console.error('upsertItem', tbl, e); }
+  },
+
+  async deleteItem(eid, tbl, id) {
+    try {
+      await fetch(`${SB_URL}/rest/v1/${tbl}?id=eq.${id}&empresa_id=eq.${eid}`, {
+        method: 'DELETE', headers: sbHeaders()
+      });
+      DB._clearCache(eid, tbl);
+    } catch(e) { console.error('deleteItem', tbl, e); }
+  },
+
+  async patchItem(eid, tbl, id, changes) {
+    try {
+      const row = toDB(tbl, changes);
+      delete row.empresa_id;
+      await fetch(`${SB_URL}/rest/v1/${tbl}?id=eq.${id}&empresa_id=eq.${eid}`, {
+        method: 'PATCH',
+        headers: sbHeaders(),
+        body: JSON.stringify(row)
+      });
+      DB._clearCache(eid, tbl);
+    } catch(e) { console.error('patchItem', tbl, e); }
+  },
+
+  // ── Configuración ──
+  async cfg(eid) {
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/configuracion?empresa_id=eq.${eid}&select=*`, { headers: sbHeaders() });
+      const data = await r.json();
+      if (Array.isArray(data) && data.length) return data[0].nums ? data[0] : { nums: data[0].nums || {FAC:1,REC:1,CMP:1,OP:1} };
+      return { nums: {FAC:1,REC:1,CMP:1,OP:1} };
+    } catch { return { nums: {FAC:1,REC:1,CMP:1,OP:1} }; }
+  },
+
+  async setCfg(eid, val) {
+    try {
+      await fetch(`${SB_URL}/rest/v1/configuracion`, {
+        method: 'POST',
+        headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+        body: JSON.stringify({ empresa_id: eid, nums: val.nums || val })
+      });
+    } catch(e) { console.error('setCfg', e); }
+  },
+
+  // ── Usuarios ──
+  async getUsuarios(eid) {
+    return await DB.getE(eid, 'usuarios');
+  },
+
+  async findUsuario(eid, usuario, pwd) {
+    try {
+      const r = await fetch(
+        `${SB_URL}/rest/v1/usuarios?empresa_id=eq.${eid}&usuario=eq.${encodeURIComponent(usuario)}&pwd=eq.${encodeURIComponent(pwd)}&activo=eq.true&select=*`,
+        { headers: sbHeaders() }
+      );
+      const data = await r.json();
+      if (Array.isArray(data) && data.length) return fromDB('usuarios', data[0]);
+      return null;
+    } catch { return null; }
+  },
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -363,12 +598,15 @@ const FP_DEF=[
 ];
 const RUBROS_DEF=['Sueldos','Alquileres','Servicios','Honorarios','Mantenimiento','Impuestos','Varios'];
 
-function initEmpresa(eid){
-  if(!DB.getE(eid,'formas_pago').length) DB.setE(eid,'formas_pago',FP_DEF.map(f=>({...f,id:genId(),activo:true})));
-  if(!DB.getE(eid,'rubros').length) DB.setE(eid,'rubros',RUBROS_DEF.map(n=>({id:genId(),nombre:n,activo:true})));
-  const cfg=DB.cfg(eid);
-  if(!cfg.nums) DB.setCfg(eid,{...cfg,nums:{FAC:1,REC:1,CMP:1,OP:1}});
-  if(!DB.getE(eid,'usuarios').length) DB.setE(eid,'usuarios',[{id:genId(),nombre:'Administrador',usuario:'admin',pwd:hashPwd('admin'),rol:'admin',activo:true}]);
+async function initEmpresa(eid){
+  const fps=await DB.getE(eid,'formas_pago');
+  if(!fps.length) await DB.setE(eid,'formas_pago',FP_DEF.map(f=>({...f,id:genId(),activo:true})));
+  const rubs=await DB.getE(eid,'rubros');
+  if(!rubs.length) await DB.setE(eid,'rubros',RUBROS_DEF.map(n=>({id:genId(),nombre:n,activo:true})));
+  const cfg=await DB.cfg(eid);
+  if(!cfg.nums) await DB.setCfg(eid,{nums:{FAC:1,REC:1,CMP:1,OP:1}});
+  const users=await DB.getUsuarios(eid);
+  if(!users.length) await DB.setE(eid,'usuarios',[{id:genId(),nombre:'Administrador',usuario:'admin',pwd:hashPwd('admin'),rol:'admin',activo:true,empresaId:eid}]);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -386,6 +624,15 @@ function toast(msg,type='info'){
   el.innerHTML=`<span style="font-weight:700">${icons[type]}</span><span>${esc(msg)}</span>`;
   document.getElementById('toast-wrap').appendChild(el);
   setTimeout(()=>el.remove(),3200);
+}
+
+function showLoading(msg='Cargando...'){
+  const el=document.getElementById('loading-overlay');
+  document.getElementById('loading-msg').textContent=msg;
+  el.style.display='flex';
+}
+function hideLoading(){
+  document.getElementById('loading-overlay').style.display='none';
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -425,12 +672,12 @@ function showScreen(name){
 // ═══════════════════════════════════════════════════════════
 // EMPRESA SELECTOR
 // ═══════════════════════════════════════════════════════════
-function renderEmpresasScreen(){
-  const list=DB.get('empresas')||[];
+async function renderEmpresasScreen(){
+  const list=await DB.getEmpresas();
   const g=document.getElementById('empresas-grid');
   g.innerHTML=list.map(e=>`
     <div class="e-card" onclick="selectEmpresa('${e.id}')">
-      <div class="e-dot" style="background:${e.color}"></div>
+      <div class="e-dot" style="background:${e.color||'#2563eb'}"></div>
       <h3>${esc(e.nombre)}</h3>
       <p>${esc(e.cuit||'Sin CUIT')}</p>
     </div>
@@ -466,7 +713,7 @@ function pickColor(el,hiddenId,color){
   document.getElementById(hiddenId).value=color;
 }
 
-function saveNuevaEmpresa(){
+async function saveNuevaEmpresa(){
   const nombre=document.getElementById('ne-n').value.trim();
   if(!nombre){toast('El nombre es obligatorio','error');return}
   const e={id:genId(),nombre,cuit:document.getElementById('ne-cuit').value.trim(),
@@ -474,21 +721,24 @@ function saveNuevaEmpresa(){
     email:document.getElementById('ne-email').value.trim(),
     telefono:document.getElementById('ne-tel').value.trim(),
     color:document.getElementById('ne-color').value};
-  const list=[...(DB.get('empresas')||[]),e];
-  DB.set('empresas',list);
-  initEmpresa(e.id);
+  showLoading('Creando empresa...');
+  await DB.saveEmpresa(e);
+  await initEmpresa(e.id);
+  hideLoading();
   closeModal();
   toast(`Empresa "${nombre}" creada`,'success');
-  renderEmpresasScreen();
+  await renderEmpresasScreen();
   selectEmpresa(e.id);
 }
 
-function selectEmpresa(id){
-  const list=DB.get('empresas')||[];
+async function selectEmpresa(id){
+  showLoading('Cargando empresa...');
+  const list=await DB.getEmpresas();
   _empresa=list.find(e=>e.id===id);
-  if(!_empresa)return;
-  initEmpresa(id);
-  document.getElementById('lt-dot').style.background=_empresa.color;
+  if(!_empresa){hideLoading();return}
+  await initEmpresa(id);
+  hideLoading();
+  document.getElementById('lt-dot').style.background=_empresa.color||'#2563eb';
   document.getElementById('lt-name').textContent=_empresa.nombre;
   document.getElementById('l-user').value='';
   document.getElementById('l-pass').value='';
@@ -500,12 +750,13 @@ function selectEmpresa(id){
 // ═══════════════════════════════════════════════════════════
 // LOGIN / LOGOUT
 // ═══════════════════════════════════════════════════════════
-function doLogin(){
+async function doLogin(){
   const u=document.getElementById('l-user').value.trim();
   const p=document.getElementById('l-pass').value;
-  const users=DB.getE(_empresa.id,'usuarios');
-  const found=users.find(x=>x.usuario===u&&x.pwd===hashPwd(p)&&x.activo);
   const err=document.getElementById('l-err');
+  showLoading('Verificando...');
+  const found=await DB.findUsuario(_empresa.id,u,hashPwd(p));
+  hideLoading();
   if(!found){err.textContent='Usuario o contraseña incorrectos';err.style.display='block';return}
   err.style.display='none';
   _user=found;
@@ -514,7 +765,7 @@ function doLogin(){
 document.getElementById('l-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin()});
 
 function doLogout(){_user=null;showScreen('login')}
-function changeEmpresa(){_user=null;_empresa=null;renderEmpresasScreen();showScreen('empresas')}
+async function changeEmpresa(){_user=null;_empresa=null;await renderEmpresasScreen();showScreen('empresas')}
 
 // ═══════════════════════════════════════════════════════════
 // LOAD APP
@@ -584,7 +835,7 @@ function renderNav(){
   `).join('');
 }
 
-function navTo(sec){
+async function navTo(sec){
   _section=sec;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
   const el=document.getElementById('ni-'+sec);
@@ -593,6 +844,7 @@ function navTo(sec){
   document.getElementById('tb-title').textContent=info[0];
   document.getElementById('tb-sub').textContent=info[1];
   const c=document.getElementById('main-content');
+  showLoading('Cargando...');
   const map={
     dashboard:renderDashboard,ventas:renderVentas,compras:renderCompras,
     tesoreria:renderTesoreria,informes:renderInformes,
@@ -602,19 +854,20 @@ function navTo(sec){
     rubros:renderRubros,'formas-pago':renderFormasPago,
     bancos:renderBancos,usuarios:renderUsuarios,config:renderConfig,
   };
-  if(map[sec])map[sec](c);
+  if(map[sec]) await map[sec](c);
   else c.innerHTML=`<div class="empty"><div class="ei">🚧</div><h3>En desarrollo</h3><p>Próximamente disponible</p></div>`;
+  hideLoading();
 }
 
 // ═══════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════
-function renderDashboard(c){
+async function renderDashboard(c){
   const eid=_empresa.id;
-  const cl=DB.getE(eid,'clientes').filter(x=>x.activo).length;
-  const pr=DB.getE(eid,'proveedores').filter(x=>x.activo).length;
-  const fv=DB.getE(eid,'facturas_venta');
-  const fc=DB.getE(eid,'facturas_compra');
+  const cl=await DB.getE(eid,'clientes').filter(x=>x.activo).length;
+  const pr=await DB.getE(eid,'proveedores').filter(x=>x.activo).length;
+  const fv=await DB.getE(eid,'facturas_venta');
+  const fc=await DB.getE(eid,'facturas_compra');
   const pendCobro=fv.filter(f=>f.tipo==='cc'&&f.estado!=='cobrada').reduce((s,f)=>s+f.total,0);
   const pendPago=fc.filter(f=>f.tipo==='cc'&&f.estado!=='pagada').reduce((s,f)=>s+f.total,0);
   const mes=today().slice(0,7)+'-01';
@@ -639,9 +892,9 @@ function renderDashboard(c){
 // CLIENTES
 // ═══════════════════════════════════════════════════════════
 let _clQ='';
-function renderClientes(){
+async function renderClientes(){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'clientes');
+  const items=await DB.getE(eid,'clientes');
   const f=_clQ?items.filter(x=>x.nombre.toLowerCase().includes(_clQ.toLowerCase())||(x.cuit||'').includes(_clQ)):items;
   const c=document.getElementById('main-content');
   c.innerHTML=`
@@ -674,7 +927,7 @@ const IVA_OPTS=['Resp. Inscripto','Monotributista','Consumidor Final','Exento'];
 
 function openClienteModal(id){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'clientes');
+  const items=await DB.getE(eid,'clientes');
   const it=id?items.find(x=>x.id===id):null;
   const v=it||{codigo:`CLI-${String(items.length+1).padStart(4,'0')}`,nombre:'',cuit:'',condicionIva:'Resp. Inscripto',email:'',telefono:'',direccion:'',condicionCobro:'contado',diasVenc:30,observaciones:'',activo:true};
   openModal(id?'Editar cliente':'Nuevo cliente',`
@@ -704,11 +957,11 @@ function openClienteModal(id){
   if(!id)setTimeout(()=>document.getElementById('cl-nom').focus(),50);
 }
 
-function saveCliente(id){
+async function saveCliente(id){
   const nombre=document.getElementById('cl-nom').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
   const eid=_empresa.id;
-  let items=DB.getE(eid,'clientes');
+  const items=await DB.getE(eid,'clientes');
   const obj={id:id||genId(),codigo:document.getElementById('cl-cod').value.trim(),nombre,
     cuit:document.getElementById('cl-cuit').value.trim(),condicionIva:document.getElementById('cl-iva').value,
     email:document.getElementById('cl-email').value.trim(),telefono:document.getElementById('cl-tel').value.trim(),
@@ -717,8 +970,9 @@ function saveCliente(id){
     observaciones:document.getElementById('cl-obs').value.trim(),
     activo:document.getElementById('cl-act').value==='1',
     serviciosHabituales:id?(items.find(x=>x.id===id)||{}).serviciosHabituales||[]:[]};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'clientes',items);
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'clientes',obj);
+  hideLoading();
   closeModal();toast(id?'Cliente actualizado':'Cliente creado','success');renderClientes();
 }
 
@@ -726,10 +980,10 @@ function saveCliente(id){
 // PROVEEDORES
 // ═══════════════════════════════════════════════════════════
 let _pvQ='';
-function renderProveedores(){
+async function renderProveedores(){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'proveedores');
-  const rubros=DB.getE(eid,'rubros');
+  const items=await DB.getE(eid,'proveedores');
+  const rubros=await DB.getE(eid,'rubros');
   const f=_pvQ?items.filter(x=>x.nombre.toLowerCase().includes(_pvQ.toLowerCase())):items;
   const c=document.getElementById('main-content');
   c.innerHTML=`
@@ -757,8 +1011,8 @@ function renderProveedores(){
 
 function openProveedorModal(id){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'proveedores');
-  const rubros=DB.getE(eid,'rubros').filter(r=>r.activo);
+  const items=await DB.getE(eid,'proveedores');
+  const rubros=await DB.getE(eid,'rubros').filter(r=>r.activo);
   const it=id?items.find(x=>x.id===id):null;
   const v=it||{codigo:`PRV-${String(items.length+1).padStart(4,'0')}`,nombre:'',cuit:'',rubroId:'',email:'',telefono:'',direccion:'',condicionPago:'contado',diasVenc:30,observaciones:'',activo:true};
   openModal(id?'Editar proveedor':'Nuevo proveedor',`
@@ -787,11 +1041,11 @@ function openProveedorModal(id){
   ]);
 }
 
-function saveProveedor(id){
+async function saveProveedor(id){
   const nombre=document.getElementById('pv-nom').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
   const eid=_empresa.id;
-  let items=DB.getE(eid,'proveedores');
+  let items=await DB.getE(eid,'proveedores');
   const obj={id:id||genId(),codigo:document.getElementById('pv-cod').value.trim(),nombre,
     cuit:document.getElementById('pv-cuit').value.trim(),rubroId:document.getElementById('pv-rub').value,
     email:document.getElementById('pv-email').value.trim(),telefono:document.getElementById('pv-tel').value.trim(),
@@ -799,8 +1053,9 @@ function saveProveedor(id){
     diasVenc:parseInt(document.getElementById('pv-dias').value)||30,
     observaciones:document.getElementById('pv-obs').value.trim(),
     activo:document.getElementById('pv-act').value==='1'};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'proveedores',items);
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'proveedores',obj);
+  hideLoading();
   closeModal();toast('Proveedor guardado','success');renderProveedores();
 }
 
@@ -808,13 +1063,13 @@ function saveProveedor(id){
 // PRODUCTOS (venta y compra)
 // ═══════════════════════════════════════════════════════════
 let _prQ='';
-function renderProductos(sec){
+async function renderProductos(sec){
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const label=sec==='prod-venta'?'Producto de venta':'Producto de compra';
   const withRubro=sec==='prod-compra';
-  const items=DB.getE(eid,key);
-  const rubros=DB.getE(eid,'rubros');
+  const items=await DB.getE(eid,key);
+  const rubros=await DB.getE(eid,'rubros');
   const f=_prQ?items.filter(x=>x.descripcion.toLowerCase().includes(_prQ.toLowerCase())||x.codigo.toLowerCase().includes(_prQ.toLowerCase())):items;
   const c=document.getElementById('main-content');
   c.innerHTML=`
@@ -843,8 +1098,8 @@ function openProductoModal(sec,id){
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const withRubro=sec==='prod-compra';
-  const rubros=DB.getE(eid,'rubros').filter(r=>r.activo);
-  const items=DB.getE(eid,key);
+  const rubros=await DB.getE(eid,'rubros').filter(r=>r.activo);
+  const items=await DB.getE(eid,key);
   const it=id?items.find(x=>x.id===id):null;
   const v=it||{codigo:'',descripcion:'',precio:0,unidad:'unidad',rubroId:'',activo:true};
   openModal(id?'Editar producto':'Nuevo producto',`
@@ -864,29 +1119,30 @@ function openProductoModal(sec,id){
   ]);
 }
 
-function saveProducto(sec,id){
+async function saveProducto(sec,id){
   const desc=document.getElementById('pr-desc').value.trim();
   if(!desc){toast('Descripción obligatoria','error');return}
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const withRubro=sec==='prod-compra';
-  let items=DB.getE(eid,key);
+  let items=await DB.getE(eid,key);
   const obj={id:id||genId(),codigo:document.getElementById('pr-cod').value.trim(),descripcion:desc,
     precio:parseFloat(document.getElementById('pr-prc').value)||0,
     unidad:document.getElementById('pr-uni').value.trim(),
     rubroId:withRubro?document.getElementById('pr-rub').value:undefined,
     activo:document.getElementById('pr-act').value==='1'};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,key,items);
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,key,obj);
+  hideLoading();
   closeModal();toast('Guardado','success');renderProductos(sec);
 }
 
 // ═══════════════════════════════════════════════════════════
 // RUBROS
 // ═══════════════════════════════════════════════════════════
-function renderRubros(){
+async function renderRubros(){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'rubros');
+  const items=await DB.getE(eid,'rubros');
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div>${xlsxToolbarBtns('rubros')}<button class="btn btn-primary btn-sm" onclick="openRubroModal()">+ Nuevo rubro</button></div>
     <div class="tw"><table><thead><tr><th>Nombre</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -903,7 +1159,7 @@ function renderRubros(){
 
 function openRubroModal(id){
   const eid=_empresa.id;
-  const it=id?DB.getE(eid,'rubros').find(x=>x.id===id):null;
+  const it=id?await DB.getE(eid,'rubros').find(x=>x.id===id):null;
   const v=it||{nombre:'',activo:true};
   openModal(id?'Editar rubro':'Nuevo rubro',`
     <div class="fg"><label>Nombre *</label><input id="rb-n" value="${esc(v.nombre)}" placeholder="Ej: Sueldos"></div>
@@ -911,22 +1167,24 @@ function openRubroModal(id){
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveRubro('${id||''}')`}]);
   setTimeout(()=>document.getElementById('rb-n').focus(),50);
 }
-function saveRubro(id){
+async function saveRubro(id){
   const nombre=document.getElementById('rb-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
-  const eid=_empresa.id;let items=DB.getE(eid,'rubros');
+  const eid=_empresa.id;let items=await DB.getE(eid,'rubros');
   const obj={id:id||genId(),nombre,activo:document.getElementById('rb-act').value==='1'};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'rubros',items);closeModal();toast('Guardado','success');renderRubros();
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'rubros',obj);
+  hideLoading();
+  closeModal();toast('Guardado','success');renderRubros();
 }
 
 // ═══════════════════════════════════════════════════════════
 // FORMAS DE PAGO
 // ═══════════════════════════════════════════════════════════
 const TIPO_FP={efectivo:'Efectivo',transferencia:'Transferencia',cheque_comun:'Cheque común',cheque_diferido:'Cheque diferido',tarjeta:'Tarjeta',digital:'Digital/MercadoPago',personalizada:'Personalizada'};
-function renderFormasPago(){
+async function renderFormasPago(){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'formas_pago');
+  const items=await DB.getE(eid,'formas_pago');
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div>${xlsxToolbarBtns('formas_pago')}<button class="btn btn-primary btn-sm" onclick="openFPModal()">+ Nueva forma de pago</button></div>
     <div class="tw"><table><thead><tr><th>Nombre</th><th>Tipo</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -943,7 +1201,7 @@ function renderFormasPago(){
 }
 function openFPModal(id){
   const eid=_empresa.id;
-  const it=id?DB.getE(eid,'formas_pago').find(x=>x.id===id):null;
+  const it=id?await DB.getE(eid,'formas_pago').find(x=>x.id===id):null;
   const v=it||{nombre:'',tipo:'efectivo',activo:true};
   openModal(id?'Editar forma de pago':'Nueva forma de pago',`
     <div class="fg"><label>Nombre *</label><input id="fp-n" value="${esc(v.nombre)}" placeholder="Ej: Transferencia BBVA"></div>
@@ -951,21 +1209,23 @@ function openFPModal(id){
     <div class="fg"><label>Estado</label><select id="fp-act"><option value="1"${v.activo?' selected':''}>Activo</option><option value="0"${!v.activo?' selected':''}>Inactivo</option></select></div>
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveFP('${id||''}')`}]);
 }
-function saveFP(id){
+async function saveFP(id){
   const nombre=document.getElementById('fp-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
-  const eid=_empresa.id;let items=DB.getE(eid,'formas_pago');
+  const eid=_empresa.id;let items=await DB.getE(eid,'formas_pago');
   const obj={id:id||genId(),nombre,tipo:document.getElementById('fp-t').value,activo:document.getElementById('fp-act').value==='1'};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'formas_pago',items);closeModal();toast('Guardado','success');renderFormasPago();
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'formas_pago',obj);
+  hideLoading();
+  closeModal();toast('Guardado','success');renderFormasPago();
 }
 
 // ═══════════════════════════════════════════════════════════
 // BANCOS
 // ═══════════════════════════════════════════════════════════
-function renderBancos(){
+async function renderBancos(){
   const eid=_empresa.id;
-  const items=DB.getE(eid,'bancos');
+  const items=await DB.getE(eid,'bancos');
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div>${xlsxToolbarBtns('bancos')}<button class="btn btn-primary btn-sm" onclick="openBancoModal()">+ Nuevo banco</button></div>
     ${items.length?`<div class="tw"><table><thead><tr><th>Nombre</th><th>CBU / Alias</th><th>N° Cuenta</th><th>Saldo inicial</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -985,7 +1245,7 @@ function renderBancos(){
 }
 function openBancoModal(id){
   const eid=_empresa.id;
-  const it=id?DB.getE(eid,'bancos').find(x=>x.id===id):null;
+  const it=id?await DB.getE(eid,'bancos').find(x=>x.id===id):null;
   const v=it||{nombre:'',cbu:'',numeroCuenta:'',saldoInicial:0,activo:true};
   openModal(id?'Editar banco':'Nuevo banco',`
     <div class="fg"><label>Nombre del banco *</label><input id="bk-n" value="${esc(v.nombre)}" placeholder="Ej: Banco Nación Argentina"></div>
@@ -999,25 +1259,27 @@ function openBancoModal(id){
     </div>
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveBanco('${id||''}')`}]);
 }
-function saveBanco(id){
+async function saveBanco(id){
   const nombre=document.getElementById('bk-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
-  const eid=_empresa.id;let items=DB.getE(eid,'bancos');
+  const eid=_empresa.id;let items=await DB.getE(eid,'bancos');
   const obj={id:id||genId(),nombre,cbu:document.getElementById('bk-cbu').value.trim(),
     numeroCuenta:document.getElementById('bk-nc').value.trim(),
     saldoInicial:parseFloat(document.getElementById('bk-si').value)||0,
     activo:document.getElementById('bk-act').value==='1'};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'bancos',items);closeModal();toast('Guardado','success');renderBancos();
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'bancos',obj);
+  hideLoading();
+  closeModal();toast('Guardado','success');renderBancos();
 }
 
 // ═══════════════════════════════════════════════════════════
 // USUARIOS
 // ═══════════════════════════════════════════════════════════
-function renderUsuarios(){
+async function renderUsuarios(){
   if(_user.rol!=='admin'){document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">🔐</div><h3>Sin acceso</h3><p>Solo administradores</p></div>`;return}
   const eid=_empresa.id;
-  const items=DB.getE(eid,'usuarios');
+  const items=await DB.getE(eid,'usuarios');
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div><button class="btn btn-primary btn-sm" onclick="openUsuarioModal()">+ Nuevo usuario</button></div>
     <div class="tw"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -1035,7 +1297,7 @@ function renderUsuarios(){
 }
 function openUsuarioModal(id){
   const eid=_empresa.id;
-  const it=id?DB.getE(eid,'usuarios').find(x=>x.id===id):null;
+  const it=id?await DB.getE(eid,'usuarios').find(x=>x.id===id):null;
   const v=it||{nombre:'',usuario:'',rol:'operador',activo:true};
   openModal(id?'Editar usuario':'Nuevo usuario',`
     <div class="fg"><label>Nombre completo *</label><input id="us-n" value="${esc(v.nombre)}"></div>
@@ -1047,12 +1309,12 @@ function openUsuarioModal(id){
     </div>
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveUsuario('${id||''}')`}]);
 }
-function saveUsuario(id){
+async function saveUsuario(id){
   const nombre=document.getElementById('us-n').value.trim();
   const usuario=document.getElementById('us-u').value.trim();
   if(!nombre||!usuario){toast('Nombre y usuario obligatorios','error');return}
   const eid=_empresa.id;
-  let items=DB.getE(eid,'usuarios');
+  let items=await DB.getE(eid,'usuarios');
   if(items.find(x=>x.usuario===usuario&&x.id!==id)){toast('Ese usuario ya existe','error');return}
   const old=id?items.find(x=>x.id===id):null;
   const pwd=document.getElementById('us-p').value;
@@ -1060,15 +1322,18 @@ function saveUsuario(id){
     activo:document.getElementById('us-act').value==='1',
     pwd:pwd?hashPwd(pwd):(old?old.pwd:hashPwd('admin'))};
   if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
-  DB.setE(eid,'usuarios',items);closeModal();toast('Usuario guardado','success');renderUsuarios();
+  showLoading('Guardando...');
+  await DB.upsertItem(eid,'usuarios',obj);
+  hideLoading();
+  closeModal();toast('Usuario guardado','success');renderUsuarios();
 }
 
 // ═══════════════════════════════════════════════════════════
 // CONFIGURACIÓN
 // ═══════════════════════════════════════════════════════════
-function renderConfig(){
+async function renderConfig(){
   const e=_empresa;
-  const cfg=DB.cfg(e.id);
+  const cfg=await DB.cfg(e.id);
   const nums=cfg.nums||{FAC:1,REC:1,CMP:1,OP:1};
   document.getElementById('main-content').innerHTML=`
     <div style="max-width:580px">
@@ -1109,30 +1374,33 @@ function renderConfig(){
       </div>
     </div>`;
 }
-function saveEmpresaConfig(){
+async function saveEmpresaConfig(){
   const nombre=document.getElementById('ec-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
   const upd={..._empresa,nombre,cuit:document.getElementById('ec-cuit').value.trim(),
     direccion:document.getElementById('ec-dir').value.trim(),email:document.getElementById('ec-email').value.trim(),
     telefono:document.getElementById('ec-tel').value.trim(),color:document.getElementById('ec-color').value};
-  let list=(DB.get('empresas')||[]).map(e=>e.id===_empresa.id?upd:e);
-  DB.set('empresas',list);_empresa=upd;
+  showLoading('Guardando...');
+  await DB.updateEmpresa(upd);
+  hideLoading();
+  _empresa=upd;
   document.getElementById('sb-dot').style.background=upd.color;
   document.getElementById('sb-ename').textContent=upd.nombre;
   toast('Configuración guardada','success');
 }
-function saveNums(){
-  const cfg=DB.cfg(_empresa.id);
-  cfg.nums={FAC:+document.getElementById('num-fac').value||1,REC:+document.getElementById('num-rec').value||1,
+async function saveNums(){
+  const cfg=await DB.cfg(_empresa.id);
+  const nums={FAC:+document.getElementById('num-fac').value||1,REC:+document.getElementById('num-rec').value||1,
     CMP:+document.getElementById('num-cmp').value||1,OP:+document.getElementById('num-op').value||1};
-  DB.setCfg(_empresa.id,cfg);toast('Numeraciones guardadas','success');
+  await DB.setCfg(_empresa.id,{nums});toast('Numeraciones guardadas','success');
 }
-function delEmpresa(){
-  confirm('¿Eliminar empresa?','Se eliminarán TODOS los datos. Acción irreversible.',()=>{
-    let list=(DB.get('empresas')||[]).filter(e=>e.id!==_empresa.id);
-    DB.set('empresas',list);
-    Object.keys(localStorage).filter(k=>k.startsWith(`e_${_empresa.id}_`)).forEach(k=>localStorage.removeItem(k));
-    toast('Empresa eliminada','success');changeEmpresa();
+async function delEmpresa(){
+  confirm('¿Eliminar empresa?','Se eliminarán TODOS los datos. Acción irreversible.',async()=>{
+    showLoading('Eliminando empresa...');
+    await DB.deleteEmpresa(_empresa.id);
+    hideLoading();
+    toast('Empresa eliminada','success');
+    await changeEmpresa();
   });
 }
 
@@ -1140,10 +1408,10 @@ function delEmpresa(){
 // VENTAS — Facturas
 // ═══════════════════════════════════════════════════════════
 let _fvQ='';
-function renderVentas(){
+async function renderVentas(){
   const eid=_empresa.id;
-  const fv=DB.getE(eid,'facturas_venta');
-  const cl=DB.getE(eid,'clientes');
+  const fv=await DB.getE(eid,'facturas_venta');
+  const cl=await DB.getE(eid,'clientes');
   const q=_fvQ.toLowerCase();
   const f=q?fv.filter(x=>{const c=cl.find(c=>c.id===x.clienteId);return x.numero.toLowerCase().includes(q)||(c&&c.nombre.toLowerCase().includes(q))}):fv;
   document.getElementById('main-content').innerHTML=`
@@ -1179,11 +1447,11 @@ function renderVentas(){
 }
 
 let _fvLineas=[];
-function openFVModal(){
+async function openFVModal(){
   const eid=_empresa.id;
-  const clientes=DB.getE(eid,'clientes').filter(x=>x.activo);
-  const fps=DB.getE(eid,'formas_pago').filter(x=>x.activo);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{FAC:1};
+  const clientes=await DB.getE(eid,'clientes').filter(x=>x.activo);
+  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   _fvLineas=[{id:genId(),desc:'',cantidad:1,precio:0}];
   openModal('Nueva factura de venta',`
@@ -1220,7 +1488,7 @@ function fvOnTipoChange(){
 function fvOnClienteChange(){
   const eid=_empresa.id;
   const cid=document.getElementById('fv-cl').value;
-  const cl=DB.getE(eid,'clientes').find(x=>x.id===cid);
+  const cl=await DB.getE(eid,'clientes').find(x=>x.id===cid);
   if(cl&&document.getElementById('fv-tipo').value==='cc'){
     document.getElementById('fv-venc').value=addDays(document.getElementById('fv-f').value,cl.diasVenc||30);
   }
@@ -1240,7 +1508,7 @@ function fvUpdateLinea(id,field,val){
     ln[field]=val;
     if(field==='desc'&&ln.precio===0){
       const eid=_empresa.id;
-      const prod=DB.getE(eid,'productos_venta').find(p=>p.descripcion.toLowerCase()===val.toLowerCase());
+      const prod=await DB.getE(eid,'productos_venta').find(p=>p.descripcion.toLowerCase()===val.toLowerCase());
       if(prod){ln.precio=prod.precio;fvRenderLineas();return}
     }
   }
@@ -1248,7 +1516,7 @@ function fvUpdateLinea(id,field,val){
 }
 function fvRenderLineas(){
   const eid=_empresa.id;
-  const prods=DB.getE(eid,'productos_venta').filter(x=>x.activo);
+  const prods=await DB.getE(eid,'productos_venta').filter(x=>x.activo);
   const cont=document.getElementById('fv-lineas');if(!cont)return;
   cont.innerHTML=_fvLineas.map(ln=>`
     <div style="display:grid;grid-template-columns:2fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
@@ -1265,7 +1533,7 @@ function fvUpdateTotal(){
   const t=_fvLineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
   const el=document.getElementById('fv-total');if(el)el.textContent=fmtARS(t);
 }
-function saveFV(){
+async function saveFV(){
   const eid=_empresa.id;
   const clienteId=document.getElementById('fv-cl').value;
   if(!clienteId){toast('Seleccioná un cliente','error');return}
@@ -1273,22 +1541,23 @@ function saveFV(){
   const lineas=_fvLineas.filter(l=>l.desc||l.precio>0);
   if(!lineas.length){toast('Agregá al menos una línea','error');return}
   const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{FAC:1};
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
-  nums.FAC++;DB.setCfg(eid,{...cfg,nums});
+  nums.FAC++;await DB.setCfg(eid,{nums});
   const fac={id:genId(),numero,fecha:document.getElementById('fv-f').value,clienteId,tipo,total,lineas,
     vencimiento:tipo==='cc'?document.getElementById('fv-venc').value:null,
     formaPagoId:tipo==='contado'?document.getElementById('fv-fp').value:null,
     observaciones:document.getElementById('fv-obs').value.trim(),
     estado:tipo==='contado'?'cobrada':'pendiente',fechaCreacion:new Date().toISOString()};
-  const list=DB.getE(eid,'facturas_venta');list.push(fac);
-  DB.setE(eid,'facturas_venta',list);
+  showLoading('Guardando factura...');
+  await DB.upsertItem(eid,'facturas_venta',fac);
+  hideLoading();
   closeModal();toast(`Factura ${numero} emitida`,'success');renderVentas();
 }
-function verFV(id){
+async function verFV(id){
   const eid=_empresa.id;
-  const fac=DB.getE(eid,'facturas_venta').find(x=>x.id===id);if(!fac)return;
-  const cl=DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
+  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===id);if(!fac)return;
+  const cl=await DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
   const venc=fac.vencimiento&&fac.estado!=='cobrada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
     <div class="detail-grid">
@@ -1313,12 +1582,12 @@ function verFV(id){
 // ═══════════════════════════════════════════════════════════
 // RECIBOS DE COBRO (registro rápido)
 // ═══════════════════════════════════════════════════════════
-function abrirReciboRapido(facId){
+async function abrirReciboRapido(facId){
   const eid=_empresa.id;
-  const fac=DB.getE(eid,'facturas_venta').find(x=>x.id===facId);if(!fac)return;
-  const cl=DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
-  const fps=DB.getE(eid,'formas_pago').filter(x=>x.activo);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{REC:1};
+  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===facId);if(!fac)return;
+  const cl=await DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
+  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
   const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
   openModal('Registrar cobro',`
     <div class="row2">
@@ -1337,35 +1606,35 @@ function abrirReciboRapido(facId){
     {lbl:'Confirmar cobro',cls:'btn-primary',fn:`saveReciboRapido('${facId}')`}
   ]);
 }
-function saveReciboRapido(facId){
+async function saveReciboRapido(facId){
   const eid=_empresa.id;
   const importe=parseFloat(document.getElementById('rc-imp').value)||0;
   if(!importe){toast('El importe es obligatorio','error');return}
   const fpId=document.getElementById('rc-fp').value;
   if(!fpId){toast('Seleccioná una forma de cobro','error');return}
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{REC:1};
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
   const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
-  nums.REC++;DB.setCfg(eid,{...cfg,nums});
-  const fac=DB.getE(eid,'facturas_venta').find(x=>x.id===facId);
+  nums.REC++;await DB.setCfg(eid,{...cfg,nums});
+  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===facId);
   const recibo={id:genId(),numero,fecha:document.getElementById('rc-f').value,
     clienteId:fac.clienteId,importe,formaPagoId:fpId,facturaIds:[facId],
     observaciones:document.getElementById('rc-obs').value.trim(),
     fechaCreacion:new Date().toISOString()};
-  const recibos=DB.getE(eid,'recibos_cobro');recibos.push(recibo);
-  DB.setE(eid,'recibos_cobro',recibos);
+  const recibos=await DB.getE(eid,'recibos_cobro');recibos.push(recibo);
+  await DB.setE(eid,'recibos_cobro',recibos);
   // marcar factura cobrada
-  let fvs=DB.getE(eid,'facturas_venta');
+  let fvs=await DB.getE(eid,'facturas_venta');
   fvs=fvs.map(f=>f.id===facId?{...f,estado:'cobrada',fechaCobro:recibo.fecha}:f);
-  DB.setE(eid,'facturas_venta',fvs);
+  await DB.setE(eid,'facturas_venta',fvs);
   closeModal();toast(`Cobro registrado · ${numero}`,'success');renderVentas();
 }
 
 // ═══════════════════════════════════════════════════════════
 // FACTURACIÓN MASIVA
 // ═══════════════════════════════════════════════════════════
-function renderFacMasiva(){
+async function renderFacMasiva(){
   const eid=_empresa.id;
-  const clientes=DB.getE(eid,'clientes').filter(x=>x.activo&&x.serviciosHabituales&&x.serviciosHabituales.length);
+  const clientes=await DB.getE(eid,'clientes').filter(x=>x.activo&&x.serviciosHabituales&&x.serviciosHabituales.length);
   if(!clientes.length){
     document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">📋</div><h3>Sin clientes con servicios habituales</h3><p>Asigná servicios habituales a los clientes para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
     return;
@@ -1395,14 +1664,14 @@ function renderFacMasiva(){
   document.getElementById('fm-all').checked=true;
 }
 function fmToggleAll(cb){document.querySelectorAll('.fm-ck').forEach(x=>x.checked=cb.checked)}
-function ejecutarFacMasiva(){
+async function ejecutarFacMasiva(){
   const eid=_empresa.id;
   const fecha=document.getElementById('fm-fecha').value;
   const selected=[...document.querySelectorAll('.fm-ck:checked')].map(x=>x.value);
   if(!selected.length){toast('Seleccioná al menos un cliente','error');return}
-  const clientes=DB.getE(eid,'clientes').filter(x=>selected.includes(x.id));
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{FAC:1};
-  let fvs=DB.getE(eid,'facturas_venta');let count=0;
+  const clientes=await DB.getE(eid,'clientes').filter(x=>selected.includes(x.id));
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
+  let fvs=await DB.getE(eid,'facturas_venta');let count=0;
   clientes.forEach(cl=>{
     const lineas=cl.serviciosHabituales.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
     const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
@@ -1412,7 +1681,7 @@ function ejecutarFacMasiva(){
       total,lineas,estado:cl.condicionCobro==='contado'?'cobrada':'pendiente',
       fechaCreacion:new Date().toISOString()});
   });
-  DB.setCfg(eid,{...cfg,nums});DB.setE(eid,'facturas_venta',fvs);
+  await DB.setCfg(eid,{...cfg,nums});await DB.setE(eid,'facturas_venta',fvs);
   toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}  ✓`,'success');
   navTo('ventas');
 }
@@ -1421,11 +1690,11 @@ function ejecutarFacMasiva(){
 // COMPRAS
 // ═══════════════════════════════════════════════════════════
 let _fcQ='';
-function renderCompras(){
+async function renderCompras(){
   const eid=_empresa.id;
-  const fc=DB.getE(eid,'facturas_compra');
-  const pvs=DB.getE(eid,'proveedores');
-  const rubros=DB.getE(eid,'rubros');
+  const fc=await DB.getE(eid,'facturas_compra');
+  const pvs=await DB.getE(eid,'proveedores');
+  const rubros=await DB.getE(eid,'rubros');
   const q=_fcQ.toLowerCase();
   const f=q?fc.filter(x=>{const p=pvs.find(p=>p.id===x.proveedorId);return x.numero.toLowerCase().includes(q)||(p&&p.nombre.toLowerCase().includes(q))}):fc;
   document.getElementById('main-content').innerHTML=`
@@ -1459,12 +1728,12 @@ function renderCompras(){
 }
 
 let _fcLineas=[];
-function openFCModal(){
+async function openFCModal(){
   const eid=_empresa.id;
-  const provs=DB.getE(eid,'proveedores').filter(x=>x.activo);
-  const rubros=DB.getE(eid,'rubros').filter(x=>x.activo);
-  const fps=DB.getE(eid,'formas_pago').filter(x=>x.activo);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{CMP:1};
+  const provs=await DB.getE(eid,'proveedores').filter(x=>x.activo);
+  const rubros=await DB.getE(eid,'rubros').filter(x=>x.activo);
+  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{CMP:1};
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
   _fcLineas=[{id:genId(),desc:'',rubro:'',cantidad:1,precio:0}];
   openModal('Nueva factura de compra / gasto',`
@@ -1505,7 +1774,7 @@ function fcOnTipoChange(){
 function fcOnProvChange(){
   const eid=_empresa.id;
   const pid=document.getElementById('fc-pv').value;
-  const pv=DB.getE(eid,'proveedores').find(x=>x.id===pid);
+  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===pid);
   if(pv){
     if(pv.rubroId)document.getElementById('fc-rub').value=pv.rubroId;
     if(document.getElementById('fc-tipo').value==='cc')
@@ -1521,8 +1790,8 @@ function fcUpdateLinea(id,field,val){
 }
 function fcRenderLineas(){
   const eid=_empresa.id;
-  const prods=DB.getE(eid,'productos_compra').filter(x=>x.activo);
-  const rubros=DB.getE(eid,'rubros').filter(x=>x.activo);
+  const prods=await DB.getE(eid,'productos_compra').filter(x=>x.activo);
+  const rubros=await DB.getE(eid,'rubros').filter(x=>x.activo);
   const cont=document.getElementById('fc-lineas');if(!cont)return;
   cont.innerHTML=_fcLineas.map(ln=>`
     <div style="display:grid;grid-template-columns:2fr 1fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
@@ -1540,7 +1809,7 @@ function fcUpdateTotal(){
   const t=_fcLineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
   const el=document.getElementById('fc-total');if(el)el.textContent=fmtARS(t);
 }
-function saveFC(){
+async function saveFC(){
   const eid=_empresa.id;
   const proveedorId=document.getElementById('fc-pv').value;
   if(!proveedorId){toast('Seleccioná un proveedor','error');return}
@@ -1548,9 +1817,9 @@ function saveFC(){
   const lineas=_fcLineas.filter(l=>l.desc||l.precio>0);
   if(!lineas.length){toast('Agregá al menos una línea','error');return}
   const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{CMP:1};
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{CMP:1};
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
-  nums.CMP++;DB.setCfg(eid,{...cfg,nums});
+  nums.CMP++;await DB.setCfg(eid,{nums});
   const fac={id:genId(),numero,nFP:document.getElementById('fc-nfp').value.trim(),
     fecha:document.getElementById('fc-f').value,proveedorId,tipo,
     rubroId:document.getElementById('fc-rub').value,total,lineas,
@@ -1558,15 +1827,16 @@ function saveFC(){
     formaPagoId:tipo==='contado'?document.getElementById('fc-fp').value:null,
     observaciones:document.getElementById('fc-obs').value.trim(),
     estado:tipo==='contado'?'pagada':'pendiente',fechaCreacion:new Date().toISOString()};
-  const list=DB.getE(eid,'facturas_compra');list.push(fac);
-  DB.setE(eid,'facturas_compra',list);
+  showLoading('Guardando factura...');
+  await DB.upsertItem(eid,'facturas_compra',fac);
+  hideLoading();
   closeModal();toast(`Factura ${numero} registrada`,'success');renderCompras();
 }
-function verFC(id){
+async function verFC(id){
   const eid=_empresa.id;
-  const fac=DB.getE(eid,'facturas_compra').find(x=>x.id===id);if(!fac)return;
-  const pv=DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
-  const rub=DB.getE(eid,'rubros').find(x=>x.id===fac.rubroId);
+  const fac=await DB.getE(eid,'facturas_compra').find(x=>x.id===id);if(!fac)return;
+  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
+  const rub=await DB.getE(eid,'rubros').find(x=>x.id===fac.rubroId);
   const venc=fac.vencimiento&&fac.estado!=='pagada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
     <div class="detail-grid">
@@ -1587,12 +1857,12 @@ function verFC(id){
     ...(fac.tipo==='cc'&&fac.estado!=='pagada'?[{lbl:'💸 Registrar pago',cls:'btn-primary',fn:`closeModal();abrirPagoRapido('${fac.id}')`}]:[])
   ],true);
 }
-function abrirPagoRapido(facId){
+async function abrirPagoRapido(facId){
   const eid=_empresa.id;
-  const fac=DB.getE(eid,'facturas_compra').find(x=>x.id===facId);if(!fac)return;
-  const pv=DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
-  const fps=DB.getE(eid,'formas_pago').filter(x=>x.activo);
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{OP:1};
+  const fac=await DB.getE(eid,'facturas_compra').find(x=>x.id===facId);if(!fac)return;
+  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
+  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{OP:1};
   const numero=`OP-${String(nums.OP).padStart(5,'0')}`;
   openModal('Registrar pago',`
     <div class="row2">
@@ -1608,36 +1878,37 @@ function abrirPagoRapido(facId){
     <div class="fg"><label>Observaciones</label><textarea id="op-obs" rows="2"></textarea></div>
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Confirmar pago',cls:'btn-primary',fn:`savePagoRapido('${facId}')`}]);
 }
-function savePagoRapido(facId){
+async function savePagoRapido(facId){
   const eid=_empresa.id;
   const importe=parseFloat(document.getElementById('op-imp').value)||0;
   if(!importe){toast('El importe es obligatorio','error');return}
   const fpId=document.getElementById('op-fp').value;
   if(!fpId){toast('Seleccioná una forma de pago','error');return}
-  const cfg=DB.cfg(eid);const nums=cfg.nums||{OP:1};
-  const numero=`OP-${String(nums.OP).padStart(5,'0')}`;nums.OP++;DB.setCfg(eid,{...cfg,nums});
-  const fac=DB.getE(eid,'facturas_compra').find(x=>x.id===facId);
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{OP:1};
+  const numero=`OP-${String(nums.OP).padStart(5,'0')}`;nums.OP++;await DB.setCfg(eid,{nums});
+  const facs=await DB.getE(eid,'facturas_compra');
+  const fac=facs.find(x=>x.id===facId);
   const op={id:genId(),numero,fecha:document.getElementById('op-f').value,
     proveedorId:fac.proveedorId,importe,formaPagoId:fpId,facturaIds:[facId],
     observaciones:document.getElementById('op-obs').value.trim(),fechaCreacion:new Date().toISOString()};
-  const ops=DB.getE(eid,'ordenes_pago');ops.push(op);DB.setE(eid,'ordenes_pago',ops);
-  let fcs=DB.getE(eid,'facturas_compra');
-  fcs=fcs.map(f=>f.id===facId?{...f,estado:'pagada',fechaPago:op.fecha}:f);
-  DB.setE(eid,'facturas_compra',fcs);
+  showLoading('Registrando pago...');
+  await DB.upsertItem(eid,'ordenes_pago',op);
+  await DB.patchItem(eid,'facturas_compra',facId,{estado:'pagada',fechaPago:op.fecha});
+  hideLoading();
   closeModal();toast(`Pago registrado · ${numero}`,'success');renderCompras();
 }
 
 // ═══════════════════════════════════════════════════════════
 // TESORERÍA
 // ═══════════════════════════════════════════════════════════
-function renderTesoreria(){
+async function renderTesoreria(){
   const eid=_empresa.id;
-  const recCob=DB.getE(eid,'recibos_cobro');
-  const ordPago=DB.getE(eid,'ordenes_pago');
-  const fvCob=DB.getE(eid,'facturas_venta').filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
-  const fcPag=DB.getE(eid,'facturas_compra').filter(x=>x.tipo==='contado'&&x.estado==='pagada');
-  const fps=DB.getE(eid,'formas_pago');
-  const bancos=DB.getE(eid,'bancos').filter(x=>x.activo);
+  const recCob=await DB.getE(eid,'recibos_cobro');
+  const ordPago=await DB.getE(eid,'ordenes_pago');
+  const fvCob=await DB.getE(eid,'facturas_venta').filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
+  const fcPag=await DB.getE(eid,'facturas_compra').filter(x=>x.tipo==='contado'&&x.estado==='pagada');
+  const fps=await DB.getE(eid,'formas_pago');
+  const bancos=await DB.getE(eid,'bancos').filter(x=>x.activo);
 
   // Movimientos: unificamos todo en una lista
   const movs=[];
@@ -1652,8 +1923,8 @@ function renderTesoreria(){
   const saldo=totalIn-totalOut;
 
   // Proyección: facturas CC pendientes
-  const fvPend=DB.getE(eid,'facturas_venta').filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
-  const fcPend=DB.getE(eid,'facturas_compra').filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
+  const fvPend=await DB.getE(eid,'facturas_venta').filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
+  const fcPend=await DB.getE(eid,'facturas_compra').filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
 
   document.getElementById('main-content').innerHTML=`
     <div class="g4 mb24">
@@ -1684,7 +1955,7 @@ function renderTesoreria(){
         <div class="card mb16">
           <h3 class="fw6 mb12" style="font-size:14px">Proyección — Cobros pendientes</h3>
           ${fvPend.length?fvPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const cl=DB.getE(eid,'clientes').find(x=>x.id===f.clienteId);
+            const cl=await DB.getE(eid,'clientes').find(x=>x.id===f.clienteId);
             const venc=f.vencimiento&&f.vencimiento<today();
             return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
               <div><div style="font-size:13px;font-weight:500">${cl?esc(cl.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
@@ -1695,7 +1966,7 @@ function renderTesoreria(){
         <div class="card">
           <h3 class="fw6 mb12" style="font-size:14px">Proyección — Pagos pendientes</h3>
           ${fcPend.length?fcPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const pv=DB.getE(eid,'proveedores').find(x=>x.id===f.proveedorId);
+            const pv=await DB.getE(eid,'proveedores').find(x=>x.id===f.proveedorId);
             const venc=f.vencimiento&&f.vencimiento<today();
             return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
               <div><div style="font-size:13px;font-weight:500">${pv?esc(pv.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
@@ -1711,15 +1982,15 @@ function renderTesoreria(){
 // INFORMES
 // ═══════════════════════════════════════════════════════════
 let _infDesde='', _infHasta='';
-function renderInformes(){
+async function renderInformes(){
   const eid=_empresa.id;
   if(!_infDesde)_infDesde=today().slice(0,7)+'-01';
   if(!_infHasta)_infHasta=today();
-  const fv=DB.getE(eid,'facturas_venta').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
-  const fc=DB.getE(eid,'facturas_compra').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
-  const clientes=DB.getE(eid,'clientes');
-  const provs=DB.getE(eid,'proveedores');
-  const rubros=DB.getE(eid,'rubros');
+  const fv=await DB.getE(eid,'facturas_venta').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
+  const fc=await DB.getE(eid,'facturas_compra').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
+  const clientes=await DB.getE(eid,'clientes');
+  const provs=await DB.getE(eid,'proveedores');
+  const rubros=await DB.getE(eid,'rubros');
 
   const totalVentas=fv.reduce((s,f)=>s+f.total,0);
   const totalCobrado=fv.filter(f=>f.estado==='cobrada').reduce((s,f)=>s+f.total,0);
@@ -1802,11 +2073,11 @@ function renderInformes(){
 // ═══════════════════════════════════════════════════════════
 // CUENTA CORRIENTE CLIENTES (dentro de ventas)
 // ═══════════════════════════════════════════════════════════
-function verCCCliente(clienteId){
+async function verCCCliente(clienteId){
   const eid=_empresa.id;
-  const cl=DB.getE(eid,'clientes').find(x=>x.id===clienteId);if(!cl)return;
-  const fvs=DB.getE(eid,'facturas_venta').filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
-  const recs=DB.getE(eid,'recibos_cobro').filter(r=>r.clienteId===clienteId);
+  const cl=await DB.getE(eid,'clientes').find(x=>x.id===clienteId);if(!cl)return;
+  const fvs=await DB.getE(eid,'facturas_venta').filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
+  const recs=await DB.getE(eid,'recibos_cobro').filter(r=>r.clienteId===clienteId);
   const movs=[
     ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
     ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
@@ -1829,47 +2100,62 @@ function verCCCliente(clienteId){
 // ═══════════════════════════════════════════════════════════
 // GENERIC HELPERS
 // ═══════════════════════════════════════════════════════════
-function toggleItem(key,id,cb,isUsers){
+async function toggleItem(key,id,cb,isUsers){
   const eid=_empresa.id;
-  let items=isUsers?DB.getE(eid,'usuarios'):DB.getE(eid,key);
+  const tbl=isUsers?'usuarios':key;
+  let items=await DB.getE(eid,tbl);
   items=items.map(x=>x.id===id?{...x,activo:!x.activo}:x);
-  if(isUsers)DB.setE(eid,'usuarios',items);else DB.setE(eid,key,items);
-  if(typeof cb==='function')cb();
+  await DB.setE(eid,tbl,items);
+  if(typeof cb==='function')await cb();
 }
-function delItem(key,id,cb){
-  confirm('¿Eliminar registro?','Esta acción no se puede deshacer.',()=>{
+async function delItem(key,id,cb){
+  confirm('¿Eliminar registro?','Esta acción no se puede deshacer.',async()=>{
     const eid=_empresa.id;
-    let items=DB.getE(eid,key).filter(x=>x.id!==id);
-    DB.setE(eid,key,items);
+    await DB.deleteItem(eid,key,id);
     toast('Eliminado','success');
-    if(typeof cb==='function')cb();
+    if(typeof cb==='function')await cb();
   });
 }
 
 // ═══════════════════════════════════════════════════════════
 // BACKUP / RESTORE
 // ═══════════════════════════════════════════════════════════
-function exportBackup(){
+async function exportBackup(){
   if(!_empresa){toast('Sin empresa activa','error');return}
+  showLoading('Generando backup...');
   const eid=_empresa.id;
-  const keys=Object.keys(localStorage).filter(k=>k.startsWith(`e_${eid}_`)||k==='empresas');
-  const data={};keys.forEach(k=>data[k]=DB.get(k));
+  const tables=['clientes','proveedores','productos_venta','productos_compra','rubros',
+    'formas_pago','bancos','usuarios','facturas_venta','recibos_cobro','facturas_compra','ordenes_pago'];
+  const data={empresa:_empresa};
+  for(const tbl of tables){
+    data[tbl]=await DB.getE(eid,tbl);
+  }
+  data.cfg=await DB.cfg(eid);
+  hideLoading();
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const a=document.createElement('a');
   a.href=URL.createObjectURL(blob);
   a.download=`backup_${_empresa.nombre.replace(/\s+/g,'_')}_${today()}.json`;
   a.click();toast('Backup descargado','success');
 }
-function importBackup(input){
+async function importBackup(input){
   const file=input.files[0];if(!file)return;
   const reader=new FileReader();
-  reader.onload=e=>{
+  reader.onload=async e=>{
     try{
       const data=JSON.parse(e.target.result);
-      confirm('¿Importar backup?','Esto sobreescribirá los datos existentes.',()=>{
-        Object.entries(data).forEach(([k,v])=>DB.set(k,v));
-        toast('Backup importado. Recargá la página.','success');
-        setTimeout(()=>location.reload(),1500);
+      confirm('¿Importar backup?','Esto restaurará todos los datos desde el archivo.',async()=>{
+        showLoading('Importando datos...');
+        const eid=_empresa.id;
+        const tables=['clientes','proveedores','productos_venta','productos_compra','rubros',
+          'formas_pago','bancos','usuarios','facturas_venta','recibos_cobro','facturas_compra','ordenes_pago'];
+        for(const tbl of tables){
+          if(data[tbl]) await DB.setE(eid,tbl,data[tbl]);
+        }
+        if(data.cfg) await DB.setCfg(eid,data.cfg);
+        hideLoading();
+        toast('Backup importado correctamente','success');
+        await navTo(_section);
       });
     }catch{toast('Archivo inválido','error')}
   };
@@ -1998,8 +2284,8 @@ function exportarExcelMaestro(maestroKey) {
   const def = MAESTROS[maestroKey];
   if (!def) return;
   const eid = _empresa.id;
-  const items = DB.getE(eid, def.dbKey);
-  const rubros = DB.getE(eid, 'rubros');
+  const items = await DB.getE(eid, def.dbKey);
+  const rubros = await DB.getE(eid, 'rubros');
 
   // Hoja de datos
   const dataRows = items.length
@@ -2063,8 +2349,8 @@ function importarExcelMaestro(input, maestroKey) {
 
       // Procesar cada fila → objeto normalizado
       const eid = _empresa.id;
-      const rubros = DB.getE(eid, 'rubros');
-      const existing = DB.getE(eid, def.dbKey);
+      const rubros = await DB.getE(eid, 'rubros');
+      const existing = await DB.getE(eid, def.dbKey);
 
       const parsed = rows.map((row, i) => {
         const obj = { id: genId(), activo: true };
@@ -2210,36 +2496,36 @@ function setTodasAccion(accion) {
   });
 }
 
-function ejecutarImportacion() {
+async function ejecutarImportacion() {
   const def = _importDef;
   const eid = _importEid;
-  let items = DB.getE(eid, def.dbKey);
   let agregados = 0;
   let reemplazados = 0;
   let omitidos = 0;
 
+  showLoading('Importando registros...');
+  closeModal();
+
   // Agregar nuevos
-  _importNuevos.forEach(obj => {
+  for (const obj of _importNuevos) {
     delete obj._rowNum;
-    items.push(obj);
+    await DB.upsertItem(eid, def.dbKey, obj);
     agregados++;
-  });
+  }
 
   // Procesar duplicados según decisión
-  _importPendingDups.forEach(d => {
+  for (const d of _importPendingDups) {
     delete d.nuevo._rowNum;
     if (d.accion === 'reemplazar') {
-      // Preservar ID original
       d.nuevo.id = d.existente.id;
-      items = items.map(x => x.id === d.existente.id ? d.nuevo : x);
+      await DB.upsertItem(eid, def.dbKey, d.nuevo);
       reemplazados++;
     } else {
       omitidos++;
     }
-  });
+  }
 
-  DB.setE(eid, def.dbKey, items);
-  closeModal();
+  hideLoading();
 
   const parts = [];
   if (agregados) parts.push(`${agregados} agregado${agregados !== 1 ? 's' : ''}`);
@@ -2247,8 +2533,7 @@ function ejecutarImportacion() {
   if (omitidos) parts.push(`${omitidos} omitido${omitidos !== 1 ? 's' : ''}`);
   toast(`Importación completada: ${parts.join(' · ')}`, 'success');
 
-  // Refrescar vista actual
-  navTo(_section);
+  await navTo(_section);
 }
 
 // ── Botón toolbar para cada maestro ──
@@ -2268,14 +2553,21 @@ function xlsxToolbarBtns(maestroKey) {
 // ═══════════════════════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════════════════════
-window.addEventListener('DOMContentLoaded',()=>{
-  // seed demo si primera vez
-  if(!(DB.get('empresas')||[]).length){
-    const id=genId();
-    DB.set('empresas',[{id,nombre:'Mi Estudio Contable',cuit:'30-12345678-9',color:'#2563eb',direccion:'Av. San Martín 100',email:'info@miestudio.com'}]);
-    initEmpresa(id);
+window.addEventListener('DOMContentLoaded', async () => {
+  showLoading('Conectando con la base de datos...');
+  try {
+    await renderEmpresasScreen();
+  } catch(e) {
+    console.error('Error al conectar con Supabase:', e);
+    document.getElementById('empresas-grid').innerHTML = `
+      <div style="text-align:center;padding:40px;color:var(--red)">
+        <div style="font-size:32px;margin-bottom:12px">⚠️</div>
+        <h3 style="margin-bottom:8px">Error de conexión</h3>
+        <p style="font-size:13px;color:var(--text2)">No se pudo conectar con la base de datos. Verificá tu conexión a internet.</p>
+        <button class="btn btn-primary" style="margin-top:16px" onclick="location.reload()">Reintentar</button>
+      </div>`;
   }
-  renderEmpresasScreen();
+  hideLoading();
 });
 </script>
 </body>
