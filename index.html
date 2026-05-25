@@ -673,15 +673,21 @@ function showScreen(name){
 // EMPRESA SELECTOR
 // ═══════════════════════════════════════════════════════════
 async function renderEmpresasScreen(){
-  const list=await DB.getEmpresas();
   const g=document.getElementById('empresas-grid');
-  g.innerHTML=list.map(e=>`
-    <div class="e-card" onclick="selectEmpresa('${e.id}')">
-      <div class="e-dot" style="background:${e.color||'#2563eb'}"></div>
-      <h3>${esc(e.nombre)}</h3>
-      <p>${esc(e.cuit||'Sin CUIT')}</p>
-    </div>
-  `).join('')+`<div class="e-card new" onclick="openNuevaEmpresa()"><span style="font-size:26px">+</span><span style="font-size:13px">Nueva empresa</span></div>`;
+  if(!g) return;
+  try {
+    const list=await DB.getEmpresas();
+    g.innerHTML=list.map(e=>`
+      <div class="e-card" onclick="selectEmpresa('${e.id}')">
+        <div class="e-dot" style="background:${e.color||'#2563eb'}"></div>
+        <h3>${esc(e.nombre)}</h3>
+        <p>${esc(e.cuit||'Sin CUIT')}</p>
+      </div>
+    `).join('')+`<div class="e-card new" onclick="openNuevaEmpresa()"><span style="font-size:26px">+</span><span style="font-size:13px">Nueva empresa</span></div>`;
+  } catch(e) {
+    console.error('renderEmpresasScreen error:', e);
+    g.innerHTML=`<div class="e-card new" onclick="openNuevaEmpresa()"><span style="font-size:26px">+</span><span style="font-size:13px">Nueva empresa</span></div>`;
+  }
 }
 
 function openNuevaEmpresa(){
@@ -2554,20 +2560,23 @@ function xlsxToolbarBtns(maestroKey) {
 // INIT
 // ═══════════════════════════════════════════════════════════
 window.addEventListener('DOMContentLoaded', async () => {
-  showLoading('Conectando con la base de datos...');
+  // Mostrar pantalla de empresas inmediatamente con estado de carga
+  showScreen('empresas');
+  const g = document.getElementById('empresas-grid');
+  g.innerHTML = `<div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--text2)"><div style="font-size:32px;margin-bottom:12px">⏳</div><p>Conectando con la base de datos...</p></div>`;
+
   try {
     await renderEmpresasScreen();
   } catch(e) {
     console.error('Error al conectar con Supabase:', e);
-    document.getElementById('empresas-grid').innerHTML = `
-      <div style="text-align:center;padding:40px;color:var(--red)">
+    g.innerHTML = `
+      <div style="grid-column:1/-1;text-align:center;padding:40px;color:var(--red)">
         <div style="font-size:32px;margin-bottom:12px">⚠️</div>
         <h3 style="margin-bottom:8px">Error de conexión</h3>
-        <p style="font-size:13px;color:var(--text2)">No se pudo conectar con la base de datos. Verificá tu conexión a internet.</p>
+        <p style="font-size:13px;color:var(--text2)">No se pudo conectar con la base de datos.</p>
         <button class="btn btn-primary" style="margin-top:16px" onclick="location.reload()">Reintentar</button>
       </div>`;
   }
-  hideLoading();
 });
 </script>
 </body>
