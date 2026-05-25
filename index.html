@@ -931,7 +931,7 @@ async function renderClientes(){
 
 const IVA_OPTS=['Resp. Inscripto','Monotributista','Consumidor Final','Exento'];
 
-function openClienteModal(id){
+async function openClienteModal(id){
   const eid=_empresa.id;
   const items=await DB.getE(eid,'clientes');
   const it=id?items.find(x=>x.id===id):null;
@@ -1015,7 +1015,7 @@ async function renderProveedores(){
     :`<div class="empty"><div class="ei">🏭</div><h3>Sin proveedores</h3><p>Creá el primer proveedor</p></div>`}`;
 }
 
-function openProveedorModal(id){
+async function openProveedorModal(id){
   const eid=_empresa.id;
   const items=await DB.getE(eid,'proveedores');
   const rubros=await DB.getE(eid,'rubros').filter(r=>r.activo);
@@ -1100,7 +1100,7 @@ async function renderProductos(sec){
     :`<div class="empty"><div class="ei">📦</div><h3>Sin productos</h3><p>Creá el primer ${label.toLowerCase()}</p></div>`}`;
 }
 
-function openProductoModal(sec,id){
+async function openProductoModal(sec,id){
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const withRubro=sec==='prod-compra';
@@ -1163,7 +1163,7 @@ async function renderRubros(){
     </tbody></table></div>`;
 }
 
-function openRubroModal(id){
+async function openRubroModal(id){
   const eid=_empresa.id;
   const it=id?await DB.getE(eid,'rubros').find(x=>x.id===id):null;
   const v=it||{nombre:'',activo:true};
@@ -1205,7 +1205,7 @@ async function renderFormasPago(){
     </tr>`).join('')}
     </tbody></table></div>`;
 }
-function openFPModal(id){
+async function openFPModal(id){
   const eid=_empresa.id;
   const it=id?await DB.getE(eid,'formas_pago').find(x=>x.id===id):null;
   const v=it||{nombre:'',tipo:'efectivo',activo:true};
@@ -1249,7 +1249,7 @@ async function renderBancos(){
     </tbody></table></div>`
     :`<div class="empty"><div class="ei">🏛️</div><h3>Sin bancos</h3><p>Agregá los bancos con los que opera la empresa</p></div>`}`;
 }
-function openBancoModal(id){
+async function openBancoModal(id){
   const eid=_empresa.id;
   const it=id?await DB.getE(eid,'bancos').find(x=>x.id===id):null;
   const v=it||{nombre:'',cbu:'',numeroCuenta:'',saldoInicial:0,activo:true};
@@ -1301,7 +1301,7 @@ async function renderUsuarios(){
     </tbody></table></div>
     <p style="font-size:12px;color:var(--text2);margin-top:10px">Contraseña por defecto para nuevos usuarios: <strong>admin</strong></p>`;
 }
-function openUsuarioModal(id){
+async function openUsuarioModal(id){
   const eid=_empresa.id;
   const it=id?await DB.getE(eid,'usuarios').find(x=>x.id===id):null;
   const v=it||{nombre:'',usuario:'',rol:'operador',activo:true};
@@ -1491,7 +1491,7 @@ function fvOnTipoChange(){
   document.getElementById('fv-venc-row').style.display=cc?'':'none';
   document.getElementById('fv-fp-row').style.display=cc?'none':'';
 }
-function fvOnClienteChange(){
+async function fvOnClienteChange(){
   const eid=_empresa.id;
   const cid=document.getElementById('fv-cl').value;
   const cl=await DB.getE(eid,'clientes').find(x=>x.id===cid);
@@ -1499,15 +1499,15 @@ function fvOnClienteChange(){
     document.getElementById('fv-venc').value=addDays(document.getElementById('fv-f').value,cl.diasVenc||30);
   }
 }
-function fvAddLinea(){
+async function fvAddLinea(){
   _fvLineas.push({id:genId(),desc:'',cantidad:1,precio:0});
   fvRenderLineas();
 }
-function fvRemoveLinea(id){
+async function fvRemoveLinea(id){
   _fvLineas=_fvLineas.filter(x=>x.id!==id);
   fvRenderLineas();
 }
-function fvUpdateLinea(id,field,val){
+async function fvUpdateLinea(id,field,val){
   const ln=_fvLineas.find(x=>x.id===id);if(!ln)return;
   if(field==='cantidad'||field==='precio')ln[field]=parseFloat(val)||0;
   else{
@@ -1520,7 +1520,7 @@ function fvUpdateLinea(id,field,val){
   }
   fvUpdateTotal();
 }
-function fvRenderLineas(){
+async function fvRenderLineas(){
   const eid=_empresa.id;
   const prods=await DB.getE(eid,'productos_venta').filter(x=>x.activo);
   const cont=document.getElementById('fv-lineas');if(!cont)return;
@@ -1777,7 +1777,7 @@ function fcOnTipoChange(){
   document.getElementById('fc-venc-row').style.display=cc?'':'none';
   document.getElementById('fc-fp-row').style.display=cc?'none':'';
 }
-function fcOnProvChange(){
+async function fcOnProvChange(){
   const eid=_empresa.id;
   const pid=document.getElementById('fc-pv').value;
   const pv=await DB.getE(eid,'proveedores').find(x=>x.id===pid);
@@ -1794,7 +1794,7 @@ function fcUpdateLinea(id,field,val){
   if(field==='cantidad'||field==='precio')ln[field]=parseFloat(val)||0;else ln[field]=val;
   fcUpdateTotal();
 }
-function fcRenderLineas(){
+async function fcRenderLineas(){
   const eid=_empresa.id;
   const prods=await DB.getE(eid,'productos_compra').filter(x=>x.activo);
   const rubros=await DB.getE(eid,'rubros').filter(x=>x.activo);
@@ -2285,7 +2285,7 @@ function itemToRow(item, cols, rubros) {
 }
 
 // ── Exportar planilla de un maestro ──
-function exportarExcelMaestro(maestroKey) {
+async function exportarExcelMaestro(maestroKey) {
   if (!XLSX) { toast('SheetJS no disponible', 'error'); return; }
   const def = MAESTROS[maestroKey];
   if (!def) return;
@@ -2330,12 +2330,12 @@ function exportarExcelMaestro(maestroKey) {
 }
 
 // ── Importar planilla: parsear y mostrar modal de confirmación ──
-function importarExcelMaestro(input, maestroKey) {
+async function importarExcelMaestro(input, maestroKey) {
   const file = input.files[0];
   if (!file) return;
   const def = MAESTROS[maestroKey];
   const reader = new FileReader();
-  reader.onload = e => {
+  reader.onload = async e => {
     try {
       const wb = XLSX.read(e.target.result, { type: 'array' });
       // Buscar la hoja del maestro (primera que no sea "Instrucciones")
