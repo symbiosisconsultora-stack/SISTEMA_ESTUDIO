@@ -870,8 +870,8 @@ async function navTo(sec){
 // ═══════════════════════════════════════════════════════════
 async function renderDashboard(c){
   const eid=_empresa.id;
-  const cl=await DB.getE(eid,'clientes').filter(x=>x.activo).length;
-  const pr=await DB.getE(eid,'proveedores').filter(x=>x.activo).length;
+  const cl=(await DB.getE(eid,'clientes')).filter(x=>x.activo).length;
+  const pr=(await DB.getE(eid,'proveedores')).filter(x=>x.activo).length;
   const fv=await DB.getE(eid,'facturas_venta');
   const fc=await DB.getE(eid,'facturas_compra');
   const pendCobro=fv.filter(f=>f.tipo==='cc'&&f.estado!=='cobrada').reduce((s,f)=>s+f.total,0);
@@ -1018,7 +1018,7 @@ async function renderProveedores(){
 async function openProveedorModal(id){
   const eid=_empresa.id;
   const items=await DB.getE(eid,'proveedores');
-  const rubros=await DB.getE(eid,'rubros').filter(r=>r.activo);
+  const rubros=(await DB.getE(eid,'rubros')).filter(r=>r.activo);
   const it=id?items.find(x=>x.id===id):null;
   const v=it||{codigo:`PRV-${String(items.length+1).padStart(4,'0')}`,nombre:'',cuit:'',rubroId:'',email:'',telefono:'',direccion:'',condicionPago:'contado',diasVenc:30,observaciones:'',activo:true};
   openModal(id?'Editar proveedor':'Nuevo proveedor',`
@@ -1104,7 +1104,7 @@ async function openProductoModal(sec,id){
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const withRubro=sec==='prod-compra';
-  const rubros=await DB.getE(eid,'rubros').filter(r=>r.activo);
+  const rubros=(await DB.getE(eid,'rubros')).filter(r=>r.activo);
   const items=await DB.getE(eid,key);
   const it=id?items.find(x=>x.id===id):null;
   const v=it||{codigo:'',descripcion:'',precio:0,unidad:'unidad',rubroId:'',activo:true};
@@ -1165,7 +1165,7 @@ async function renderRubros(){
 
 async function openRubroModal(id){
   const eid=_empresa.id;
-  const it=id?await DB.getE(eid,'rubros').find(x=>x.id===id):null;
+  const it=id?(await DB.getE(eid,'rubros')).find(x=>x.id===id):null;
   const v=it||{nombre:'',activo:true};
   openModal(id?'Editar rubro':'Nuevo rubro',`
     <div class="fg"><label>Nombre *</label><input id="rb-n" value="${esc(v.nombre)}" placeholder="Ej: Sueldos"></div>
@@ -1207,7 +1207,7 @@ async function renderFormasPago(){
 }
 async function openFPModal(id){
   const eid=_empresa.id;
-  const it=id?await DB.getE(eid,'formas_pago').find(x=>x.id===id):null;
+  const it=id?(await DB.getE(eid,'formas_pago')).find(x=>x.id===id):null;
   const v=it||{nombre:'',tipo:'efectivo',activo:true};
   openModal(id?'Editar forma de pago':'Nueva forma de pago',`
     <div class="fg"><label>Nombre *</label><input id="fp-n" value="${esc(v.nombre)}" placeholder="Ej: Transferencia BBVA"></div>
@@ -1251,7 +1251,7 @@ async function renderBancos(){
 }
 async function openBancoModal(id){
   const eid=_empresa.id;
-  const it=id?await DB.getE(eid,'bancos').find(x=>x.id===id):null;
+  const it=id?(await DB.getE(eid,'bancos')).find(x=>x.id===id):null;
   const v=it||{nombre:'',cbu:'',numeroCuenta:'',saldoInicial:0,activo:true};
   openModal(id?'Editar banco':'Nuevo banco',`
     <div class="fg"><label>Nombre del banco *</label><input id="bk-n" value="${esc(v.nombre)}" placeholder="Ej: Banco Nación Argentina"></div>
@@ -1303,7 +1303,7 @@ async function renderUsuarios(){
 }
 async function openUsuarioModal(id){
   const eid=_empresa.id;
-  const it=id?await DB.getE(eid,'usuarios').find(x=>x.id===id):null;
+  const it=id?(await DB.getE(eid,'usuarios')).find(x=>x.id===id):null;
   const v=it||{nombre:'',usuario:'',rol:'operador',activo:true};
   openModal(id?'Editar usuario':'Nuevo usuario',`
     <div class="fg"><label>Nombre completo *</label><input id="us-n" value="${esc(v.nombre)}"></div>
@@ -1455,8 +1455,8 @@ async function renderVentas(){
 let _fvLineas=[];
 async function openFVModal(){
   const eid=_empresa.id;
-  const clientes=await DB.getE(eid,'clientes').filter(x=>x.activo);
-  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
+  const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   _fvLineas=[{id:genId(),desc:'',cantidad:1,precio:0}];
@@ -1494,7 +1494,7 @@ function fvOnTipoChange(){
 async function fvOnClienteChange(){
   const eid=_empresa.id;
   const cid=document.getElementById('fv-cl').value;
-  const cl=await DB.getE(eid,'clientes').find(x=>x.id===cid);
+  const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===cid);
   if(cl&&document.getElementById('fv-tipo').value==='cc'){
     document.getElementById('fv-venc').value=addDays(document.getElementById('fv-f').value,cl.diasVenc||30);
   }
@@ -1514,7 +1514,7 @@ async function fvUpdateLinea(id,field,val){
     ln[field]=val;
     if(field==='desc'&&ln.precio===0){
       const eid=_empresa.id;
-      const prod=await DB.getE(eid,'productos_venta').find(p=>p.descripcion.toLowerCase()===val.toLowerCase());
+      const prod=(await DB.getE(eid,'productos_venta')).find(p=>p.descripcion.toLowerCase()===val.toLowerCase());
       if(prod){ln.precio=prod.precio;fvRenderLineas();return}
     }
   }
@@ -1522,7 +1522,7 @@ async function fvUpdateLinea(id,field,val){
 }
 async function fvRenderLineas(){
   const eid=_empresa.id;
-  const prods=await DB.getE(eid,'productos_venta').filter(x=>x.activo);
+  const prods=(await DB.getE(eid,'productos_venta')).filter(x=>x.activo);
   const cont=document.getElementById('fv-lineas');if(!cont)return;
   cont.innerHTML=_fvLineas.map(ln=>`
     <div style="display:grid;grid-template-columns:2fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
@@ -1562,8 +1562,8 @@ async function saveFV(){
 }
 async function verFV(id){
   const eid=_empresa.id;
-  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===id);if(!fac)return;
-  const cl=await DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
+  const fac=(await DB.getE(eid,'facturas_venta')).find(x=>x.id===id);if(!fac)return;
+  const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===fac.clienteId);
   const venc=fac.vencimiento&&fac.estado!=='cobrada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
     <div class="detail-grid">
@@ -1590,9 +1590,9 @@ async function verFV(id){
 // ═══════════════════════════════════════════════════════════
 async function abrirReciboRapido(facId){
   const eid=_empresa.id;
-  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===facId);if(!fac)return;
-  const cl=await DB.getE(eid,'clientes').find(x=>x.id===fac.clienteId);
-  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const fac=(await DB.getE(eid,'facturas_venta')).find(x=>x.id===facId);if(!fac)return;
+  const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===fac.clienteId);
+  const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
   const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
   openModal('Registrar cobro',`
@@ -1621,7 +1621,7 @@ async function saveReciboRapido(facId){
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
   const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
   nums.REC++;await DB.setCfg(eid,{...cfg,nums});
-  const fac=await DB.getE(eid,'facturas_venta').find(x=>x.id===facId);
+  const fac=(await DB.getE(eid,'facturas_venta')).find(x=>x.id===facId);
   const recibo={id:genId(),numero,fecha:document.getElementById('rc-f').value,
     clienteId:fac.clienteId,importe,formaPagoId:fpId,facturaIds:[facId],
     observaciones:document.getElementById('rc-obs').value.trim(),
@@ -1640,7 +1640,7 @@ async function saveReciboRapido(facId){
 // ═══════════════════════════════════════════════════════════
 async function renderFacMasiva(){
   const eid=_empresa.id;
-  const clientes=await DB.getE(eid,'clientes').filter(x=>x.activo&&x.serviciosHabituales&&x.serviciosHabituales.length);
+  const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo&&x.serviciosHabituales&&x.serviciosHabituales.length);
   if(!clientes.length){
     document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">📋</div><h3>Sin clientes con servicios habituales</h3><p>Asigná servicios habituales a los clientes para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
     return;
@@ -1675,7 +1675,7 @@ async function ejecutarFacMasiva(){
   const fecha=document.getElementById('fm-fecha').value;
   const selected=[...document.querySelectorAll('.fm-ck:checked')].map(x=>x.value);
   if(!selected.length){toast('Seleccioná al menos un cliente','error');return}
-  const clientes=await DB.getE(eid,'clientes').filter(x=>selected.includes(x.id));
+  const clientes=(await DB.getE(eid,'clientes')).filter(x=>selected.includes(x.id));
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
   let fvs=await DB.getE(eid,'facturas_venta');let count=0;
   clientes.forEach(cl=>{
@@ -1736,9 +1736,9 @@ async function renderCompras(){
 let _fcLineas=[];
 async function openFCModal(){
   const eid=_empresa.id;
-  const provs=await DB.getE(eid,'proveedores').filter(x=>x.activo);
-  const rubros=await DB.getE(eid,'rubros').filter(x=>x.activo);
-  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const provs=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
+  const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
+  const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{CMP:1};
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
   _fcLineas=[{id:genId(),desc:'',rubro:'',cantidad:1,precio:0}];
@@ -1780,7 +1780,7 @@ function fcOnTipoChange(){
 async function fcOnProvChange(){
   const eid=_empresa.id;
   const pid=document.getElementById('fc-pv').value;
-  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===pid);
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===pid);
   if(pv){
     if(pv.rubroId)document.getElementById('fc-rub').value=pv.rubroId;
     if(document.getElementById('fc-tipo').value==='cc')
@@ -1796,8 +1796,8 @@ function fcUpdateLinea(id,field,val){
 }
 async function fcRenderLineas(){
   const eid=_empresa.id;
-  const prods=await DB.getE(eid,'productos_compra').filter(x=>x.activo);
-  const rubros=await DB.getE(eid,'rubros').filter(x=>x.activo);
+  const prods=(await DB.getE(eid,'productos_compra')).filter(x=>x.activo);
+  const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
   const cont=document.getElementById('fc-lineas');if(!cont)return;
   cont.innerHTML=_fcLineas.map(ln=>`
     <div style="display:grid;grid-template-columns:2fr 1fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
@@ -1840,9 +1840,9 @@ async function saveFC(){
 }
 async function verFC(id){
   const eid=_empresa.id;
-  const fac=await DB.getE(eid,'facturas_compra').find(x=>x.id===id);if(!fac)return;
-  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
-  const rub=await DB.getE(eid,'rubros').find(x=>x.id===fac.rubroId);
+  const fac=(await DB.getE(eid,'facturas_compra')).find(x=>x.id===id);if(!fac)return;
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===fac.proveedorId);
+  const rub=(await DB.getE(eid,'rubros')).find(x=>x.id===fac.rubroId);
   const venc=fac.vencimiento&&fac.estado!=='pagada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
     <div class="detail-grid">
@@ -1865,9 +1865,9 @@ async function verFC(id){
 }
 async function abrirPagoRapido(facId){
   const eid=_empresa.id;
-  const fac=await DB.getE(eid,'facturas_compra').find(x=>x.id===facId);if(!fac)return;
-  const pv=await DB.getE(eid,'proveedores').find(x=>x.id===fac.proveedorId);
-  const fps=await DB.getE(eid,'formas_pago').filter(x=>x.activo);
+  const fac=(await DB.getE(eid,'facturas_compra')).find(x=>x.id===facId);if(!fac)return;
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===fac.proveedorId);
+  const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{OP:1};
   const numero=`OP-${String(nums.OP).padStart(5,'0')}`;
   openModal('Registrar pago',`
@@ -1911,10 +1911,10 @@ async function renderTesoreria(){
   const eid=_empresa.id;
   const recCob=await DB.getE(eid,'recibos_cobro');
   const ordPago=await DB.getE(eid,'ordenes_pago');
-  const fvCob=await DB.getE(eid,'facturas_venta').filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
-  const fcPag=await DB.getE(eid,'facturas_compra').filter(x=>x.tipo==='contado'&&x.estado==='pagada');
+  const fvCob=(await DB.getE(eid,'facturas_venta')).filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
+  const fcPag=(await DB.getE(eid,'facturas_compra')).filter(x=>x.tipo==='contado'&&x.estado==='pagada');
   const fps=await DB.getE(eid,'formas_pago');
-  const bancos=await DB.getE(eid,'bancos').filter(x=>x.activo);
+  const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
 
   // Movimientos: unificamos todo en una lista
   const movs=[];
@@ -1929,8 +1929,8 @@ async function renderTesoreria(){
   const saldo=totalIn-totalOut;
 
   // Proyección: facturas CC pendientes
-  const fvPend=await DB.getE(eid,'facturas_venta').filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
-  const fcPend=await DB.getE(eid,'facturas_compra').filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
+  const fvPend=(await DB.getE(eid,'facturas_venta')).filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
+  const fcPend=(await DB.getE(eid,'facturas_compra')).filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
 
   document.getElementById('main-content').innerHTML=`
     <div class="g4 mb24">
@@ -1961,7 +1961,7 @@ async function renderTesoreria(){
         <div class="card mb16">
           <h3 class="fw6 mb12" style="font-size:14px">Proyección — Cobros pendientes</h3>
           ${fvPend.length?fvPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const cl=await DB.getE(eid,'clientes').find(x=>x.id===f.clienteId);
+            const cl=clientes.find(x=>x.id===f.clienteId);
             const venc=f.vencimiento&&f.vencimiento<today();
             return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
               <div><div style="font-size:13px;font-weight:500">${cl?esc(cl.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
@@ -1972,7 +1972,7 @@ async function renderTesoreria(){
         <div class="card">
           <h3 class="fw6 mb12" style="font-size:14px">Proyección — Pagos pendientes</h3>
           ${fcPend.length?fcPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const pv=await DB.getE(eid,'proveedores').find(x=>x.id===f.proveedorId);
+            const pv=proveedores.find(x=>x.id===f.proveedorId);
             const venc=f.vencimiento&&f.vencimiento<today();
             return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
               <div><div style="font-size:13px;font-weight:500">${pv?esc(pv.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
@@ -1992,8 +1992,8 @@ async function renderInformes(){
   const eid=_empresa.id;
   if(!_infDesde)_infDesde=today().slice(0,7)+'-01';
   if(!_infHasta)_infHasta=today();
-  const fv=await DB.getE(eid,'facturas_venta').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
-  const fc=await DB.getE(eid,'facturas_compra').filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
+  const fv=(await DB.getE(eid,'facturas_venta')).filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
+  const fc=(await DB.getE(eid,'facturas_compra')).filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
   const clientes=await DB.getE(eid,'clientes');
   const provs=await DB.getE(eid,'proveedores');
   const rubros=await DB.getE(eid,'rubros');
@@ -2081,9 +2081,9 @@ async function renderInformes(){
 // ═══════════════════════════════════════════════════════════
 async function verCCCliente(clienteId){
   const eid=_empresa.id;
-  const cl=await DB.getE(eid,'clientes').find(x=>x.id===clienteId);if(!cl)return;
-  const fvs=await DB.getE(eid,'facturas_venta').filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
-  const recs=await DB.getE(eid,'recibos_cobro').filter(r=>r.clienteId===clienteId);
+  const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===clienteId);if(!cl)return;
+  const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
+  const recs=(await DB.getE(eid,'recibos_cobro')).filter(r=>r.clienteId===clienteId);
   const movs=[
     ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
     ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
