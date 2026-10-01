@@ -247,7 +247,7 @@ td{padding:9px 13px;font-size:13px}
 <!-- ══ SCREEN: EMPRESAS ══ -->
 <div id="screen-empresas" class="screen active">
   <div class="brand">
-    <div class="brand-logo">📊</div>
+    <div class="brand-logo" id="brand-logo-icon">📊</div>
     <h1>SistemaGestión</h1>
     <p>Seleccioná la empresa con la que querés trabajar</p>
   </div>
@@ -259,6 +259,9 @@ td{padding:9px 13px;font-size:13px}
   <div>
     <button class="btn btn-secondary btn-sm mb16" onclick="showScreen('empresas')" style="display:block;margin-bottom:20px">← Cambiar empresa</button>
     <div class="login-box">
+      <div id="lt-logo-wrap" style="text-align:center;margin-bottom:14px;display:none">
+        <img id="lt-logo" src="" style="height:56px;max-width:180px;object-fit:contain">
+      </div>
       <div class="e-tag">
         <span id="lt-dot" style="width:8px;height:8px;border-radius:50%;display:inline-block"></span>
         <span id="lt-name"></span>
@@ -277,8 +280,8 @@ td{padding:9px 13px;font-size:13px}
 <div id="screen-app" class="screen">
   <aside class="sidebar">
     <div class="sb-brand">
-      <div class="logo">📊</div>
-      <div><div class="bn">SistemaGestión</div><div class="bs">Contable v2</div></div>
+      <div class="logo" id="sb-logo-wrap"><span id="sb-logo-inner">📊</span></div>
+      <div><div class="bn" id="sb-brand-name">SistemaGestión</div><div class="bs">Contable v2</div></div>
     </div>
     <div class="sb-empresa">
       <div class="e-chip" onclick="changeEmpresa()">
@@ -491,6 +494,11 @@ const DB = {
     if (cached) return cached;
     try {
       const r = await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}&select=*`, { headers: sbHeaders() });
+      if(!r.ok){
+        // tabla no existe u otro error HTTP — log silencioso, devolver vacío
+        console.warn('getE HTTP error', tbl, r.status);
+        return [];
+      }
       const data = await r.json();
       if (!Array.isArray(data)) return [];
       const mapped = data.map(row => fromDB(tbl, row));
@@ -766,6 +774,11 @@ async function selectEmpresa(id){
   document.getElementById('l-user').value='';
   document.getElementById('l-pass').value='';
   document.getElementById('l-err').style.display='none';
+  // Mostrar logo en pantalla de login
+  const ltLogo=document.getElementById('lt-logo');
+  const ltLogoWrap=document.getElementById('lt-logo-wrap');
+  if(_empresa.logo){ltLogo.src=_empresa.logo;ltLogoWrap.style.display='block';}
+  else{ltLogoWrap.style.display='none';}
   showScreen('login');
   setTimeout(()=>document.getElementById('l-user').focus(),80);
 }
@@ -799,6 +812,19 @@ function loadApp(){
   document.getElementById('sb-avatar').textContent=_user.nombre[0].toUpperCase();
   document.getElementById('sb-uname').textContent=_user.nombre;
   document.getElementById('sb-urol').textContent=ROLES[_user.rol]||_user.rol;
+  // Logo en sidebar
+  const sbLogoWrap=document.getElementById('sb-logo-wrap');
+  const sbLogoInner=document.getElementById('sb-logo-inner');
+  const sbBrandName=document.getElementById('sb-brand-name');
+  if(_empresa.logo){
+    sbLogoWrap.style.cssText='width:auto;height:32px;background:none;border-radius:0;padding:0;flex-shrink:0';
+    sbLogoInner.innerHTML='<img src="'+_empresa.logo+'" style="height:32px;max-width:100px;object-fit:contain">';
+    sbBrandName.textContent=_empresa.nombre;
+  } else {
+    sbLogoWrap.style.cssText='';
+    sbLogoInner.textContent='📊';
+    sbBrandName.textContent='SistemaGestión';
+  }
   renderNav();
   showScreen('app');
   navTo('dashboard');
@@ -1772,6 +1798,7 @@ async function verFV(id){
     ${fac.observaciones?`<p style="margin-top:12px;font-size:12px;color:var(--text2)">${esc(fac.observaciones)}</p>`:''}
   `,[
     {lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'},
+    {lbl:'🖨️ Imprimir',cls:'btn-secondary',fn:`imprimirComprobante('fv','${fac.id}')`},
     ...(fac.tipo==='cc'&&fac.estado!=='cobrada'?[{lbl:'💵 Registrar cobro',cls:'btn-primary',fn:`closeModal();abrirReciboRapido('${fac.id}')`}]:[])
   ],true);
 }
@@ -2042,6 +2069,13 @@ async function verFC(id){
   const rub=(await DB.getE(eid,'rubros')).find(x=>x.id===fac.rubroId);
   const venc=fac.vencimiento&&fac.estado!=='pagada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px">${esc(_empresa.nombre||'')}</div>
+        ${_empresa.cuit?`<div style="font-size:11px;color:var(--text2)">CUIT: ${esc(_empresa.cuit)}</div>`:''}
+      </div>
+      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:44px;max-width:140px;object-fit:contain">`:''}
+    </div>
     <div class="detail-grid">
       <div><div class="dl">Proveedor</div><div class="dv">${pv?esc(pv.nombre):'—'}</div></div>
       <div><div class="dl">Fecha</div><div class="dv">${esc(fac.fecha)}</div></div>
@@ -2057,6 +2091,7 @@ async function verFC(id){
     </tbody></table></div>
   `,[
     {lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'},
+    {lbl:'🖨️ Imprimir',cls:'btn-secondary',fn:`imprimirComprobante('fc','${fac.id}')`},
     ...(fac.tipo==='cc'&&fac.estado!=='pagada'?[{lbl:'💸 Registrar pago',cls:'btn-primary',fn:`closeModal();abrirPagoRapido('${fac.id}')`}]:[])
   ],true);
 }
@@ -2325,6 +2360,7 @@ async function renderInformes(){
       <div style="display:flex;gap:6px;align-self:flex-end">
         <button class="btn btn-sm ${_infTab==='economico'?'btn-primary':'btn-secondary'}" onclick="_infTab='economico';renderInformes()">📊 Informe Económico</button>
         <button class="btn btn-sm ${_infTab==='financiero'?'btn-primary':'btn-secondary'}" onclick="_infTab='financiero';renderInformes()">💵 Informe Financiero</button>
+        <button class="btn btn-sm btn-secondary" onclick="imprimirInforme()">🖨️ Imprimir</button>
       </div>
     </div>
   </div>`;
@@ -2504,7 +2540,7 @@ async function renderCCClientes(){
   const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
   const fvsAll=await DB.getE(eid,'facturas_venta');
   const recsAll=await DB.getE(eid,'recibos_cobro');
-  const ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');
+  var ncsAll=[];try{ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');}catch(e){}
 
   // Calcular saldo por cliente
   var clientesCC=clientes.filter(function(cl){
@@ -2565,7 +2601,7 @@ async function verCCCliente(clienteId){
   const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===clienteId);if(!cl)return;
   const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
   const recs=(await DB.getE(eid,'recibos_cobro')).filter(r=>r.clienteId===clienteId);
-  const ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');}catch(e){}
   const movs=[
     ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
     ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
@@ -2589,7 +2625,7 @@ async function verCCCliente(clienteId){
     }).join('')+`
     </tbody></table></div>
     <div style="text-align:right;margin-top:12px;font-size:14px;font-weight:600">Saldo actual: <span style="font-family:var(--mono);color:${saldo>0?'var(--red)':saldo<0?'var(--green)':'var(--text)'}">${fmtARS(saldo)}</span></div>
-  `,[{lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'}],true);
+  `,[{lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'🖨️ Imprimir CC',cls:'btn-secondary',fn:'closeModal();imprimirComprobante(\'cc\',\''+clienteId+'\')'}],true);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2700,6 +2736,209 @@ async function delItem(key,id,cb){
     toast('Eliminado','success');
     if(typeof cb==='function')await cb();
   });
+}
+
+// ═══════════════════════════════════════════════════════════
+// IMPRIMIR / PDF
+// ═══════════════════════════════════════════════════════════
+function _logoHtml(h){
+  if(!_empresa||!_empresa.logo)return '';
+  return '<img src="'+_empresa.logo+'" style="height:'+h+'px;max-width:160px;object-fit:contain">';
+}
+function _empresaHeader(){
+  var logoH=_empresa&&_empresa.logo?'<img src="'+_empresa.logo+'" style="height:52px;max-width:180px;object-fit:contain;display:block;margin-bottom:4px">':'';
+  var nombre=_empresa?esc(_empresa.nombre||''):'';
+  var cuit=_empresa&&_empresa.cuit?'CUIT: '+esc(_empresa.cuit):'';
+  var dir=_empresa&&_empresa.direccion?esc(_empresa.direccion):'';
+  var tel=_empresa&&_empresa.telefono?'Tel: '+esc(_empresa.telefono):'';
+  return '<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:18px;padding-bottom:14px;border-bottom:2px solid #334155">'
+    +'<div>'+logoH+'<div style="font-size:15px;font-weight:700;color:#1e293b">'+nombre+'</div>'
+    +(cuit?'<div style="font-size:12px;color:#64748b">'+cuit+'</div>':'')
+    +(dir?'<div style="font-size:12px;color:#64748b">'+dir+'</div>':'')
+    +(tel?'<div style="font-size:12px;color:#64748b">'+tel+'</div>':'')
+    +'</div></div>';
+}
+
+async function imprimirComprobante(tipo,id){
+  const eid=_empresa.id;
+  var html='';
+  if(tipo==='fv'){
+    const fac=(await DB.getE(eid,'facturas_venta')).find(x=>x.id===id);if(!fac)return;
+    const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===fac.clienteId);
+    html='<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">FACTURA DE VENTA · '+esc(fac.numero)+'</h2>'
+      +_empresaHeader()
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><tr>'
+      +'<td style="padding:4px 0;font-size:12px;color:#64748b;width:120px">Cliente</td><td style="font-size:13px;font-weight:600">'+esc(cl?cl.nombre:'—')+(cl&&cl.cuit?'<span style="font-weight:400;color:#64748b"> · CUIT: '+esc(cl.cuit)+'</span>':'')+'</td></tr>'
+      +(cl&&cl.direccion?'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Dirección</td><td style="font-size:12px">'+esc(cl.direccion)+'</td></tr>':'')
+      +'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Fecha</td><td style="font-size:12px">'+esc(fac.fecha)+'</td></tr>'
+      +(fac.vencimiento?'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Vencimiento</td><td style="font-size:12px">'+esc(fac.vencimiento)+'</td></tr>':'')
+      +'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Tipo</td><td style="font-size:12px">'+(fac.tipo==='cc'?'Cuenta Corriente':'Contado')+'</td></tr></table>'
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><thead><tr style="background:#f1f5f9">'
+      +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Descripción</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:60px">Cant.</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:110px">Precio</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:110px">Subtotal</th>'
+      +'</tr></thead><tbody>'
+      +(fac.lineas||[]).map(function(l){return '<tr><td style="padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(l.desc)+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+l.cantidad+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+fmtARS(l.precio)+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0"><strong>'+fmtARS(l.cantidad*l.precio)+'</strong></td></tr>';}).join('')
+      +'</tbody></table>'
+      +'<div style="text-align:right;font-size:16px;font-weight:700;color:#1e293b;padding-top:8px;border-top:2px solid #334155">TOTAL: '+fmtARS(fac.total)+'</div>'
+      +(fac.observaciones?'<p style="font-size:11px;color:#64748b;margin-top:14px">'+esc(fac.observaciones)+'</p>':'');
+  } else if(tipo==='fc'){
+    const fac=(await DB.getE(eid,'facturas_compra')).find(x=>x.id===id);if(!fac)return;
+    const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===fac.proveedorId);
+    html='<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">FACTURA DE COMPRA · '+esc(fac.numero)+'</h2>'
+      +_empresaHeader()
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><tr>'
+      +'<td style="padding:4px 0;font-size:12px;color:#64748b;width:120px">Proveedor</td><td style="font-size:13px;font-weight:600">'+esc(pv?pv.nombre:'—')+'</td></tr>'
+      +'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Fecha</td><td style="font-size:12px">'+esc(fac.fecha)+'</td></tr>'
+      +(fac.nFP?'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">N° Proveedor</td><td style="font-size:12px">'+esc(fac.nFP)+'</td></tr>':'')
+      +'</table>'
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><thead><tr style="background:#f1f5f9">'
+      +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Descripción</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:60px">Cant.</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:110px">Precio</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1;width:110px">Subtotal</th>'
+      +'</tr></thead><tbody>'
+      +(fac.lineas||[]).map(function(l){return '<tr><td style="padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(l.desc)+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+l.cantidad+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+fmtARS(l.precio)+'</td>'
+        +'<td style="text-align:right;padding:6px 8px;font-size:12px;border-bottom:1px solid #e2e8f0"><strong>'+fmtARS(l.cantidad*l.precio)+'</strong></td></tr>';}).join('')
+      +'</tbody></table>'
+      +'<div style="text-align:right;font-size:16px;font-weight:700;color:#1e293b;padding-top:8px;border-top:2px solid #334155">TOTAL: '+fmtARS(fac.total)+'</div>';
+  } else if(tipo==='nc'){
+    const nc=(await DB.getE(eid,'notas_credito')).find(x=>x.id===id);if(!nc)return;
+    const cl=nc.clienteId?(await DB.getE(eid,'clientes')).find(x=>x.id===nc.clienteId):null;
+    const pv=nc.proveedorId?(await DB.getE(eid,'proveedores')).find(x=>x.id===nc.proveedorId):null;
+    html='<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">NOTA DE CRÉDITO · '+esc(nc.numero)+'</h2>'
+      +_empresaHeader()
+      +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px">'
+      +(cl?'<tr><td style="padding:4px 0;font-size:12px;color:#64748b;width:120px">Cliente</td><td style="font-size:13px;font-weight:600">'+esc(cl.nombre)+'</td></tr>':'')
+      +(pv?'<tr><td style="padding:4px 0;font-size:12px;color:#64748b;width:120px">Proveedor</td><td style="font-size:13px;font-weight:600">'+esc(pv.nombre)+'</td></tr>':'')
+      +'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Fecha</td><td style="font-size:12px">'+esc(nc.fecha)+'</td></tr>'
+      +'<tr><td style="font-size:12px;color:#64748b;padding:4px 0">Concepto</td><td style="font-size:12px">'+esc(nc.descripcion||'')+'</td></tr>'
+      +'</table>'
+      +'<div style="text-align:right;font-size:16px;font-weight:700;color:#16a34a;padding-top:8px;border-top:2px solid #334155">IMPORTE NC: '+fmtARS(nc.importe)+'</div>'
+      +(nc.observaciones?'<p style="font-size:11px;color:#64748b;margin-top:14px">'+esc(nc.observaciones)+'</p>':'');
+  } else if(tipo==='cc'){
+    // CC cliente completa — id es clienteId
+    const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===id);if(!cl)return;
+    const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===id&&f.tipo==='cc');
+    const recs=(await DB.getE(eid,'recibos_cobro')).filter(r=>r.clienteId===id);
+    var ncsCC=[];try{ncsCC=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===id&&n.tipo==='venta');}catch(e){}
+    const movs=[
+      ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
+      ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
+      ...ncsCC.map(n=>({fecha:n.fecha,tipo:'Nota Crédito',numero:n.numero,debito:0,credito:n.importe})),
+    ].sort((a,b)=>a.fecha>b.fecha?1:-1);
+    var saldo=0;
+    var rowsCC=movs.map(function(m){saldo+=m.debito-m.credito;
+      return '<tr><td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.fecha)+'</td>'
+        +'<td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.tipo)+'</td>'
+        +'<td style="font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.numero)+'</td>'
+        +'<td style="text-align:right;font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:#dc2626">'+(m.debito?fmtARS(m.debito):'—')+'</td>'
+        +'<td style="text-align:right;font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:#16a34a">'+(m.credito?fmtARS(m.credito):'—')+'</td>'
+        +'<td style="text-align:right;font-family:monospace;font-weight:600;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:'+(saldo>0?'#dc2626':saldo<0?'#16a34a':'#334155')+'">'+fmtARS(saldo)+'</td>'
+        +'</tr>';
+    }).join('');
+    html='<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">CUENTA CORRIENTE · '+esc(cl.nombre)+'</h2>'
+      +_empresaHeader()
+      +'<p style="font-size:12px;color:#64748b;margin-bottom:14px">Emitido: '+today()+'</p>'
+      +'<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f1f5f9">'
+      +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Fecha</th>'
+      +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Tipo</th>'
+      +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">N°</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Débito</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Crédito</th>'
+      +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Saldo</th>'
+      +'</tr></thead><tbody>'+rowsCC+'</tbody></table>'
+      +'<div style="text-align:right;font-size:15px;font-weight:700;margin-top:12px;padding-top:8px;border-top:2px solid #334155;color:'+(saldo>0?'#dc2626':saldo<0?'#16a34a':'#334155')+'">Saldo: '+fmtARS(saldo)+'</div>';
+  }
+  if(!html)return;
+  abrirVentanaImpresion(html);
+}
+
+function abrirVentanaImpresion(contenidoHtml){
+  var w=window.open('','_blank','width=800,height=900');
+  if(!w){toast('Habilitá las ventanas emergentes para imprimir','error');return;}
+  w.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Imprimir</title>'
+    +'<style>body{font-family:Arial,sans-serif;margin:0;padding:28px 36px;color:#1e293b;background:#fff}'
+    +'@media print{body{padding:0}@page{margin:1.5cm}}</style></head>'
+    +'<body>'+contenidoHtml
+    +'<div style="margin-top:40px;text-align:center">'
+    +'<button onclick="window.print()" style="background:#2563eb;color:#fff;border:none;padding:10px 28px;border-radius:6px;font-size:14px;cursor:pointer;margin-right:10px">🖨️ Imprimir / Guardar PDF</button>'
+    +'<button onclick="window.close()" style="background:#f1f5f9;color:#334155;border:1px solid #cbd5e1;padding:10px 20px;border-radius:6px;font-size:14px;cursor:pointer">Cerrar</button>'
+    +'</div></body></html>');
+  w.document.close();
+}
+
+async function imprimirInforme(){
+  const eid=_empresa.id;
+  const desde=_infDesde||'';
+  const hasta=_infHasta||'';
+  var html='';
+
+  if(_infTab==='financiero'){
+    const recCob=await DB.getE(eid,'recibos_cobro');
+    const ordPago=await DB.getE(eid,'ordenes_pago');
+    const fvCob=(await DB.getE(eid,'facturas_venta')).filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
+    const fcPag=(await DB.getE(eid,'facturas_compra')).filter(x=>x.tipo==='contado'&&x.estado==='pagada');
+    const fps=await DB.getE(eid,'formas_pago');
+    const clientes=await DB.getE(eid,'clientes');
+    const provs=await DB.getE(eid,'proveedores');
+    const movs=[];
+    recCob.filter(r=>r.fecha>=desde&&r.fecha<=hasta).forEach(r=>{const cl=clientes.find(x=>x.id===r.clienteId);movs.push({fecha:r.fecha,tipo:'Cobro',desc:'Cobro cliente'+(cl?' · '+cl.nombre:''),numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId});});
+    fvCob.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);movs.push({fecha:f.fecha,tipo:'Cobro',desc:'Venta contado'+(cl?' · '+cl.nombre:''),numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId});});
+    ordPago.filter(o=>o.fecha>=desde&&o.fecha<=hasta).forEach(o=>{const pv=provs.find(x=>x.id===o.proveedorId);movs.push({fecha:o.fecha,tipo:'Pago',desc:'Pago proveedor'+(pv?' · '+pv.nombre:''),numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId});});
+    fcPag.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);movs.push({fecha:f.fecha,tipo:'Pago',desc:'Compra contado'+(pv?' · '+pv.nombre:''),numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId});});
+    movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
+    const totalIn=movs.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
+    const totalOut=movs.filter(m=>m.dir==='out').reduce((s,m)=>s+m.importe,0);
+    const resultado=totalIn-totalOut;
+    html=_empresaHeader()
+      +'<h2 style="font-size:16px;font-weight:700;margin-bottom:4px">Informe Financiero</h2>'
+      +'<p style="font-size:12px;color:#64748b;margin-bottom:18px">Período: '+esc(desde)+' al '+esc(hasta)+'</p>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px">'
+      +'<tr style="background:#f1f5f9"><td style="padding:8px 10px;border:1px solid #e2e8f0">Total cobranzas</td><td style="padding:8px 10px;border:1px solid #e2e8f0;text-align:right;font-weight:600;color:#16a34a">'+fmtARS(totalIn)+'</td></tr>'
+      +'<tr><td style="padding:8px 10px;border:1px solid #e2e8f0">Total pagos</td><td style="padding:8px 10px;border:1px solid #e2e8f0;text-align:right;font-weight:600;color:#dc2626">'+fmtARS(totalOut)+'</td></tr>'
+      +'<tr style="background:#f8fafc"><td style="padding:10px;border:1px solid #e2e8f0;font-weight:700">RESULTADO DE CAJA</td><td style="padding:10px;border:1px solid #e2e8f0;text-align:right;font-weight:700;font-size:14px;color:'+(resultado>=0?'#16a34a':'#dc2626')+'">'+fmtARS(resultado)+'</td></tr>'
+      +'</table>'
+      +'<h3 style="font-size:13px;font-weight:700;margin-bottom:8px">Detalle de movimientos</h3>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:11px">'
+      +'<thead><tr style="background:#f1f5f9"><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:left">Fecha</th><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:left">Descripción</th><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:left">N°</th><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:left">F.Pago</th><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">Ingreso</th><th style="padding:6px 8px;border:1px solid #e2e8f0;text-align:right">Egreso</th></tr></thead>'
+      +'<tbody>'+movs.map(function(m){var fp=fps.find(x=>x.id===m.fpId);return '<tr><td style="padding:5px 8px;border:1px solid #e2e8f0">'+esc(m.fecha)+'</td><td style="padding:5px 8px;border:1px solid #e2e8f0">'+esc(m.desc)+'</td><td style="padding:5px 8px;border:1px solid #e2e8f0;font-family:monospace">'+esc(m.numero)+'</td><td style="padding:5px 8px;border:1px solid #e2e8f0">'+(fp?esc(fp.nombre):'—')+'</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right;color:#16a34a">'+(m.dir==='in'?fmtARS(m.importe):'—')+'</td><td style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right;color:#dc2626">'+(m.dir==='out'?fmtARS(m.importe):'—')+'</td></tr>';}).join('')
+      +'</tbody></table>';
+  } else {
+    // economico
+    const fv=(await DB.getE(eid,'facturas_venta')).filter(f=>f.fecha>=desde&&f.fecha<=hasta);
+    const fc=(await DB.getE(eid,'facturas_compra')).filter(f=>f.fecha>=desde&&f.fecha<=hasta);
+    const clientes=await DB.getE(eid,'clientes');
+    const provs=await DB.getE(eid,'proveedores');
+    const totalVentas=fv.reduce((s,f)=>s+f.total,0);
+    const totalCompras=fc.reduce((s,f)=>s+f.total,0);
+    const resultado=totalVentas-totalCompras;
+    html=_empresaHeader()
+      +'<h2 style="font-size:16px;font-weight:700;margin-bottom:4px">Informe Económico</h2>'
+      +'<p style="font-size:12px;color:#64748b;margin-bottom:18px">Período: '+esc(desde)+' al '+esc(hasta)+'</p>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-bottom:20px">'
+      +'<tr style="background:#f1f5f9"><td style="padding:8px 10px;border:1px solid #e2e8f0">Total ventas devengadas</td><td style="padding:8px 10px;border:1px solid #e2e8f0;text-align:right;font-weight:600">'+fmtARS(totalVentas)+'</td></tr>'
+      +'<tr><td style="padding:8px 10px;border:1px solid #e2e8f0">Total compras y gastos devengados</td><td style="padding:8px 10px;border:1px solid #e2e8f0;text-align:right;font-weight:600">'+fmtARS(totalCompras)+'</td></tr>'
+      +'<tr style="background:#f8fafc"><td style="padding:10px;border:1px solid #e2e8f0;font-weight:700">RESULTADO BRUTO</td><td style="padding:10px;border:1px solid #e2e8f0;text-align:right;font-weight:700;font-size:14px;color:'+(resultado>=0?'#16a34a':'#dc2626')+'">'+fmtARS(resultado)+'</td></tr>'
+      +'</table>'
+      +'<div style="display:flex;gap:24px;margin-bottom:20px">'
+      +'<div style="flex:1"><h3 style="font-size:13px;font-weight:700;margin-bottom:8px">Ventas del período ('+fv.length+')</h3>'
+      +(fv.length?'<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">N°</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">Fecha</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">Cliente</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right">Total</th></tr></thead><tbody>'+fv.map(function(f){var cl=clientes.find(x=>x.id===f.clienteId);return '<tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace">'+esc(f.numero)+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0">'+esc(f.fecha)+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0">'+(cl?esc(cl.nombre):'—')+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:right;font-family:monospace">'+fmtARS(f.total)+'</td></tr>';}).join('')+'</tbody></table>'
+      :'<p style="color:#64748b;font-size:12px">Sin ventas en el período</p>')
+      +'</div>'
+      +'<div style="flex:1"><h3 style="font-size:13px;font-weight:700;margin-bottom:8px">Compras del período ('+fc.length+')</h3>'
+      +(fc.length?'<table style="width:100%;border-collapse:collapse;font-size:11px"><thead><tr style="background:#f1f5f9"><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">N°</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">Fecha</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:left">Proveedor</th><th style="padding:5px 8px;border:1px solid #e2e8f0;text-align:right">Total</th></tr></thead><tbody>'+fc.map(function(f){var pv=provs.find(x=>x.id===f.proveedorId);return '<tr><td style="padding:4px 8px;border:1px solid #e2e8f0;font-family:monospace">'+esc(f.numero)+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0">'+esc(f.fecha)+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0">'+(pv?esc(pv.nombre):'—')+'</td><td style="padding:4px 8px;border:1px solid #e2e8f0;text-align:right;font-family:monospace">'+fmtARS(f.total)+'</td></tr>';}).join('')+'</tbody></table>'
+      :'<p style="color:#64748b;font-size:12px">Sin compras en el período</p>')
+      +'</div></div>';
+  }
+  if(!html)return;
+  abrirVentanaImpresion(html);
 }
 
 // ═══════════════════════════════════════════════════════════
