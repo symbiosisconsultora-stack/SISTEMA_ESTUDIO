@@ -96,6 +96,13 @@ input,select,textarea,button{font-family:var(--font);font-size:14px}
 .fg input:focus,.fg select:focus,.fg textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.1)}
 .fg input::placeholder{color:var(--text3)}
 .fg textarea{resize:vertical;min-height:72px}
+.abonos-table{width:100%;border-collapse:collapse;margin-top:6px}
+.abonos-table th{font-size:11px;font-weight:600;color:var(--text2);padding:4px 6px;text-align:left;background:var(--surface2);border-bottom:1px solid var(--border)}
+.abonos-table td{padding:5px 6px;border-bottom:1px solid var(--border);vertical-align:middle}
+.abonos-table input{width:100%;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:13px}
+.abonos-table input:focus{outline:none;border-color:var(--accent)}
+.ab-del{background:none;border:none;cursor:pointer;color:var(--text3);font-size:15px;padding:2px 4px;transition:color .15s}
+.ab-del:hover{color:var(--red)}
 .fg input[readonly]{background:var(--surface2);color:var(--text2);cursor:default}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px}
@@ -372,15 +379,16 @@ const TABLE_MAP = {
 
 // Campos snake_case ↔ camelCase por tabla
 const FIELD_TO_DB = {
-  clientes:        { condicionIva:'condicion_iva', condicionCobro:'condicion_cobro', diasVenc:'dias_venc', serviciosHabituales:'servicios_habituales' },
+  clientes:        { condicionIva:'condicion_iva', condicionCobro:'condicion_cobro', diasVenc:'dias_venc', serviciosHabituales:'servicios_habituales', abonos:'abonos' },
   proveedores:     { rubroId:'rubro_id', condicionPago:'condicion_pago', diasVenc:'dias_venc' },
+  productos_venta: { rubroId:'rubro_id' },
   productos_compra:{ rubroId:'rubro_id' },
   bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
   facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion' },
   facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
   recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
   ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
-  usuarios:        { empresaId:'empresa_id' },
+  usuarios:        { empresaId:'empresa_id', empresasIds:'empresas_ids' },
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
@@ -576,12 +584,19 @@ const DB = {
 
   async findUsuario(eid, usuario, pwd) {
     try {
+      // Busca el usuario en la empresa actual O en cualquier empresa (para multi-empresa)
       const r = await fetch(
-        `${SB_URL}/rest/v1/usuarios?empresa_id=eq.${eid}&usuario=eq.${encodeURIComponent(usuario)}&pwd=eq.${encodeURIComponent(pwd)}&activo=eq.true&select=*`,
+        `${SB_URL}/rest/v1/usuarios?usuario=eq.${encodeURIComponent(usuario)}&pwd=eq.${encodeURIComponent(pwd)}&activo=eq.true&select=*`,
         { headers: sbHeaders() }
       );
       const data = await r.json();
-      if (Array.isArray(data) && data.length) return fromDB('usuarios', data[0]);
+      if (!Array.isArray(data) || !data.length) return null;
+      // Buscar el que tenga esta empresa habilitada
+      for (const row of data) {
+        const u = fromDB('usuarios', row);
+        const ids = Array.isArray(u.empresasIds) ? u.empresasIds : (u.empresaId ? [u.empresaId] : []);
+        if (u.empresaId === eid || ids.includes(eid)) return u;
+      }
       return null;
     } catch { return null; }
   },
@@ -679,7 +694,7 @@ async function renderEmpresasScreen(){
     const list=await DB.getEmpresas();
     g.innerHTML=list.map(e=>`
       <div class="e-card" onclick="selectEmpresa('${e.id}')">
-        <div class="e-dot" style="background:${e.color||'#2563eb'}"></div>
+        ${e.logo?`<img src="${e.logo}" style="height:40px;max-width:120px;object-fit:contain;margin-bottom:6px">`:`<div class="e-dot" style="background:${e.color||'#2563eb'}"></div>`}
         <h3>${esc(e.nombre)}</h3>
         <p>${esc(e.cuit||'Sin CUIT')}</p>
       </div>
@@ -909,6 +924,7 @@ async function renderClientes(){
         <div class="sw"><span class="si">🔍</span><input value="${esc(_clQ)}" placeholder="Buscar cliente..." oninput="_clQ=this.value;renderClientes()" style="width:240px;padding-left:32px"></div>
       </div>
       ${xlsxToolbarBtns('clientes')}
+      <button class="btn btn-secondary btn-sm" onclick="actualizarAbonosGlobal()">📈 Actualizar abonos</button>
       <button class="btn btn-primary btn-sm" onclick="openClienteModal()">+ Nuevo cliente</button>
     </div>
     ${f.length?`<div class="tw"><table><thead><tr><th>Código</th><th>Razón Social</th><th>CUIT</th><th>Cond. IVA</th><th>Cobro</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -923,7 +939,7 @@ async function renderClientes(){
         <button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('clientes','${cl.id}',renderClientes)" title="${cl.activo?'Desactivar':'Activar'}">${cl.activo?'🔒':'🔓'}</button>
         <button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('clientes','${cl.id}',renderClientes)" title="Eliminar">🗑️</button>
       </div></td>
-    </tr>`).join('')}
+    </tr>`;}).join('')}
     </tbody></table></div>
     <p class="text-muted" style="font-size:12px;margin-top:10px">${f.length} cliente${f.length!==1?'s':''}</p>`
     :`<div class="empty"><div class="ei">👥</div><h3>Sin clientes</h3><p>Creá el primer cliente</p></div>`}`;
@@ -935,7 +951,7 @@ async function openClienteModal(id){
   const eid=_empresa.id;
   const items=await DB.getE(eid,'clientes');
   const it=id?items.find(x=>x.id===id):null;
-  const v=it||{codigo:`CLI-${String(items.length+1).padStart(4,'0')}`,nombre:'',cuit:'',condicionIva:'Resp. Inscripto',email:'',telefono:'',direccion:'',condicionCobro:'contado',diasVenc:30,observaciones:'',activo:true};
+  const v=it||{codigo:`CLI-${String(items.length+1).padStart(4,'0')}`,nombre:'',cuit:'',condicionIva:'Resp. Inscripto',email:'',telefono:'',direccion:'',condicionCobro:'contado',diasVenc:30,observaciones:'',abonos:[],activo:true};
   openModal(id?'Editar cliente':'Nuevo cliente',`
     <div class="row2">
       <div class="fg"><label>Código</label><input id="cl-cod" value="${esc(v.codigo)}"${id?' readonly':''}></div>
@@ -956,6 +972,24 @@ async function openClienteModal(id){
       <div class="fg"><label>Días de vencimiento (CC)</label><input id="cl-dias" type="number" value="${v.diasVenc||30}" min="1"></div>
     </div>
     <div class="fg"><label>Observaciones</label><textarea id="cl-obs">${esc(v.observaciones||'')}</textarea></div>
+    <div class="fg">
+      <label style="display:flex;align-items:center;justify-content:space-between">
+        <span>Abonos mensuales</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="addAbonoRow()" style="font-size:11px;padding:3px 9px">+ Agregar</button>
+      </label>
+      <table class="abonos-table">
+        <thead><tr><th>Descripción</th><th style="width:70px">Cant.</th><th style="width:100px">Precio unit.</th><th style="width:32px"></th></tr></thead>
+        <tbody id="ab-tbody">
+          ${v.abonos&&v.abonos.length?v.abonos.map((a,i)=>`
+          <tr id="ab-row-${i}">
+            <td><input class="ab-desc" value="${esc(a.descripcion||'')}" placeholder="Concepto..."></td>
+            <td><input class="ab-cant" type="number" min="1" step="1" value="${a.cantidad||1}"></td>
+            <td><input class="ab-prec" type="number" min="0" step="0.01" value="${a.precio||0}"></td>
+            <td><button type="button" class="ab-del" onclick="this.closest(&apos;tr&apos;).remove()">✕</button></td>
+          </tr>`).join(''):''}
+        </tbody>
+      </table>
+    </div>
   `,[
     {lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},
     {lbl:id?'Guardar':'Crear cliente',cls:'btn-primary',fn:`saveCliente('${id||''}')`}
@@ -976,10 +1010,51 @@ async function saveCliente(id){
     observaciones:document.getElementById('cl-obs').value.trim(),
     activo:document.getElementById('cl-act').value==='1',
     serviciosHabituales:id?(items.find(x=>x.id===id)||{}).serviciosHabituales||[]:[]};
+  // leer abonos del modal
+  const abRows=[...document.querySelectorAll('#ab-tbody tr')];
+  obj.abonos=abRows.map(r=>({
+    descripcion:r.querySelector('.ab-desc').value.trim(),
+    cantidad:parseFloat(r.querySelector('.ab-cant').value)||1,
+    precio:parseFloat(r.querySelector('.ab-prec').value)||0
+  })).filter(a=>a.descripcion);
   showLoading('Guardando...');
   await DB.upsertItem(eid,'clientes',obj);
   hideLoading();
   closeModal();toast(id?'Cliente actualizado':'Cliente creado','success');renderClientes();
+}
+
+// ─── helpers abonos ─────────────────────────────────────
+function addAbonoRow(){
+  const tb=document.getElementById('ab-tbody');
+  if(!tb)return;
+  const i=Date.now();
+  const tr=document.createElement('tr');tr.id='ab-row-'+i;
+  tr.innerHTML=`<td><input class="ab-desc" placeholder="Concepto..." style="width:100%;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:13px"></td>
+    <td><input class="ab-cant" type="number" min="1" step="1" value="1" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:13px"></td>
+    <td><input class="ab-prec" type="number" min="0" step="0.01" value="0" style="width:100%;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-size:13px"></td>
+    <td><button type="button" class="ab-del" onclick="this.closest(&apos;tr&apos;).remove()">✕</button></td>`;
+  tb.appendChild(tr);
+  tr.querySelector('.ab-desc').focus();
+}
+
+// ─── actualizar abonos globalmente ──────────────────────
+async function actualizarAbonosGlobal(){
+  const pct=parseFloat(prompt('¿En qué porcentaje actualizar los abonos? (ej: 15 para +15%):'));
+  if(isNaN(pct)||pct===null)return;
+  const factor=1+pct/100;
+  const eid=_empresa.id;
+  showLoading('Actualizando abonos...');
+  const clientes=await DB.getE(eid,'clientes');
+  let updated=0;
+  for(const cl of clientes){
+    if(!cl.activo||!cl.abonos||!cl.abonos.length)continue;
+    const newAbonos=cl.abonos.map(a=>({...a,precio:Math.round(a.precio*factor*100)/100}));
+    await DB.upsertItem(eid,'clientes',{...cl,abonos:newAbonos});
+    updated++;
+  }
+  DB._cache[eid+':clientes']=null;
+  hideLoading();
+  toast(`Abonos actualizados en ${updated} cliente${updated!==1?'s':''} (${pct>0?'+':''}${pct}%)  ✓`,'success');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1082,12 +1157,13 @@ async function renderProductos(sec){
     <div class="toolbar">
       <div class="toolbar-l"><div class="sw"><span class="si">🔍</span><input value="${esc(_prQ)}" placeholder="Buscar..." oninput="_prQ=this.value;renderProductos('${sec}')" style="width:240px;padding-left:32px"></div></div>
       ${xlsxToolbarBtns(sec==='prod-venta'?'prod_venta':'prod_compra')}
+      ${sec==='prod-venta'?`<button class="btn btn-secondary btn-sm" onclick="actualizarPreciosVenta()">📈 Actualizar precios</button>`:''}
       <button class="btn btn-primary btn-sm" onclick="openProductoModal('${sec}')">+ Nuevo ${label.toLowerCase()}</button>
     </div>
-    ${f.length?`<div class="tw"><table><thead><tr><th>Código</th><th>Descripción</th>${withRubro?'<th>Rubro</th>':''}<th>Precio sug.</th><th>Unidad</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${f.map(p=>{const rub=withRubro?rubros.find(r=>r.id===p.rubroId):null;return`<tr>
+    ${f.length?`<div class="tw"><table><thead><tr><th>Código</th><th>Descripción</th><th>Rubro</th><th>Precio sug.</th><th>Unidad</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${f.map(p=>{const rub=rubros.find(r=>r.id===p.rubroId);return`<tr>
       <td class="td-mono">${esc(p.codigo)}</td><td>${esc(p.descripcion)}</td>
-      ${withRubro?`<td>${rub?esc(rub.nombre):'—'}</td>`:''}
+      <td>${rub?esc(rub.nombre):'—'}</td>
       <td class="td-mono">${fmtARS(p.precio||0)}</td><td>${esc(p.unidad||'—')}</td>
       <td><span class="sdot ${p.activo?'son':'soff'}"></span>${p.activo?'Activo':'Inactivo'}</td>
       <td><div class="td-act">
@@ -1103,7 +1179,7 @@ async function renderProductos(sec){
 async function openProductoModal(sec,id){
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
-  const withRubro=sec==='prod-compra';
+  const withRubro=true; // rubros disponibles en venta y compra
   const rubros=(await DB.getE(eid,'rubros')).filter(r=>r.activo);
   const items=await DB.getE(eid,key);
   const it=id?items.find(x=>x.id===id):null;
@@ -1114,7 +1190,7 @@ async function openProductoModal(sec,id){
       <div class="fg"><label>Unidad</label><input id="pr-uni" value="${esc(v.unidad||'unidad')}" placeholder="mes, hora, unidad..."></div>
     </div>
     <div class="fg"><label>Descripción *</label><input id="pr-desc" value="${esc(v.descripcion)}"></div>
-    ${withRubro?`<div class="fg"><label>Rubro por defecto</label><select id="pr-rub"><option value="">Sin rubro</option>${rubros.map(r=>`<option value="${r.id}"${v.rubroId===r.id?' selected':''}>${esc(r.nombre)}</option>`).join('')}</select></div>`:''}
+    <div class="fg"><label>Rubro</label><select id="pr-rub"><option value="">Sin rubro</option>${rubros.map(r=>`<option value="${r.id}"${v.rubroId===r.id?' selected':''}>${esc(r.nombre)}</option>`).join('')}</select></div>
     <div class="row2">
       <div class="fg"><label>Precio sugerido</label><input id="pr-prc" type="number" step="0.01" value="${v.precio||0}"></div>
       <div class="fg"><label>Estado</label><select id="pr-act"><option value="1"${v.activo?' selected':''}>Activo</option><option value="0"${!v.activo?' selected':''}>Inactivo</option></select></div>
@@ -1135,12 +1211,33 @@ async function saveProducto(sec,id){
   const obj={id:id||genId(),codigo:document.getElementById('pr-cod').value.trim(),descripcion:desc,
     precio:parseFloat(document.getElementById('pr-prc').value)||0,
     unidad:document.getElementById('pr-uni').value.trim(),
-    rubroId:withRubro?document.getElementById('pr-rub').value:undefined,
+    rubroId:document.getElementById('pr-rub').value||'',
     activo:document.getElementById('pr-act').value==='1'};
   showLoading('Guardando...');
   await DB.upsertItem(eid,key,obj);
   hideLoading();
   closeModal();toast('Guardado','success');renderProductos(sec);
+}
+
+// ─── actualizar precios productos venta ──────────────────
+async function actualizarPreciosVenta(){
+  const pct=parseFloat(prompt('¿En qué porcentaje actualizar los precios de venta? (ej: 15 para +15%):'));
+  if(isNaN(pct)||pct===null)return;
+  const factor=1+pct/100;
+  const eid=_empresa.id;
+  showLoading('Actualizando precios...');
+  const prods=await DB.getE(eid,'productos_venta');
+  let updated=0;
+  for(const p of prods){
+    if(!p.activo)continue;
+    const newPrecio=Math.round(p.precio*factor*100)/100;
+    await DB.upsertItem(eid,'productos_venta',{...p,precio:newPrecio});
+    updated++;
+  }
+  DB._cache[eid+':productos_venta']=null;
+  hideLoading();
+  toast(`Precios actualizados en ${updated} producto${updated!==1?'s':''} (${pct>0?'+':''}${pct}%)  ✓`,'success');
+  renderProductos('prod-venta');
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1288,10 +1385,11 @@ async function renderUsuarios(){
   const items=await DB.getE(eid,'usuarios');
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div><button class="btn btn-primary btn-sm" onclick="openUsuarioModal()">+ Nuevo usuario</button></div>
-    <div class="tw"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${items.map(u=>`<tr>
+    <div class="tw"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Empresas</th><th>Estado</th><th></th></tr></thead><tbody>
+    ${items.map(u=>{const empIds=Array.isArray(u.empresasIds)?u.empresasIds:(u.empresaId?[u.empresaId]:[]);return`<tr>
       <td>${esc(u.nombre)}</td><td class="td-mono">${esc(u.usuario)}</td>
       <td><span class="badge ${u.rol==='admin'?'badge-blue':u.rol==='operador'?'badge-green':'badge-gray'}">${ROLES[u.rol]||u.rol}</span></td>
+      <td style="font-size:12px">${empIds.length>1?`<span class="badge badge-blue">${empIds.length} empresas</span>`:'Esta empresa'}</td>
       <td><span class="sdot ${u.activo?'son':'soff'}"></span>${u.activo?'Activo':'Inactivo'}</td>
       <td><div class="td-act">
         <button class="btn btn-ghost btn-sm btn-icon" onclick="openUsuarioModal('${u.id}')">✏️</button>
@@ -1304,7 +1402,11 @@ async function renderUsuarios(){
 async function openUsuarioModal(id){
   const eid=_empresa.id;
   const it=id?(await DB.getE(eid,'usuarios')).find(x=>x.id===id):null;
-  const v=it||{nombre:'',usuario:'',rol:'operador',activo:true};
+  const v=it||{nombre:'',usuario:'',rol:'operador',activo:true,empresasIds:[]};
+  const todasEmpresas=await DB.getEmpresas();
+  const empIds=Array.isArray(v.empresasIds)?v.empresasIds:(v.empresasIds?[v.empresasIds]:[eid]);
+  // Si es nuevo usuario, pre-seleccionar empresa actual
+  const selIds=id?empIds:[eid];
   openModal(id?'Editar usuario':'Nuevo usuario',`
     <div class="fg"><label>Nombre completo *</label><input id="us-n" value="${esc(v.nombre)}"></div>
     <div class="fg"><label>Usuario (login) *</label><input id="us-u" value="${esc(v.usuario)}" placeholder="sin espacios"></div>
@@ -1313,6 +1415,16 @@ async function openUsuarioModal(id){
       <div class="fg"><label>Rol</label><select id="us-r"><option value="admin"${v.rol==='admin'?' selected':''}>Administrador</option><option value="operador"${v.rol==='operador'?' selected':''}>Operador</option><option value="lectura"${v.rol==='lectura'?' selected':''}>Solo lectura</option></select></div>
       <div class="fg"><label>Estado</label><select id="us-act"><option value="1"${v.activo?' selected':''}>Activo</option><option value="0"${!v.activo?' selected':''}>Inactivo</option></select></div>
     </div>
+    ${todasEmpresas.length>1?`<div class="fg"><label>Empresas habilitadas</label>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px">
+        ${todasEmpresas.map(e=>`<label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+          <input type="checkbox" class="us-emp-cb" value="${e.id}"${selIds.includes(e.id)?' checked':''}> 
+          <span style="width:10px;height:10px;border-radius:50%;background:${e.color||'#2563eb'};display:inline-block"></span>
+          ${esc(e.nombre)}
+        </label>`).join('')}
+      </div>
+      <p style="font-size:11px;color:var(--text2);margin-top:6px">El usuario solo puede acceder a las empresas seleccionadas.</p>
+    </div>`:''}
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveUsuario('${id||''}')`}]);
 }
 async function saveUsuario(id){
@@ -1324,9 +1436,12 @@ async function saveUsuario(id){
   if(items.find(x=>x.usuario===usuario&&x.id!==id)){toast('Ese usuario ya existe','error');return}
   const old=id?items.find(x=>x.id===id):null;
   const pwd=document.getElementById('us-p').value;
+  const cbs=[...document.querySelectorAll('.us-emp-cb:checked')].map(x=>x.value);
+  const empresasIds=cbs.length?cbs:[eid];
   const obj={id:id||genId(),nombre,usuario,rol:document.getElementById('us-r').value,
     activo:document.getElementById('us-act').value==='1',
-    pwd:pwd?hashPwd(pwd):(old?old.pwd:hashPwd('admin'))};
+    pwd:pwd?hashPwd(pwd):(old?old.pwd:hashPwd('admin')),
+    empresasIds,empresaId:eid};
   if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
   showLoading('Guardando...');
   await DB.upsertItem(eid,'usuarios',obj);
@@ -1358,6 +1473,16 @@ async function renderConfig(){
           <div class="color-opts">${COLORS.map(c=>`<div class="cswatch${e.color===c?' sel':''}" style="background:${c}" onclick="pickColor(this,'ec-color','${c}')"></div>`).join('')}</div>
           <input type="hidden" id="ec-color" value="${e.color}">
         </div>
+        <div class="fg"><label>Logo de la empresa</label>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+            ${e.logo?`<img id="logo-preview" src="${e.logo}" style="height:48px;max-width:180px;object-fit:contain;border:1px solid var(--border);border-radius:6px;padding:4px">`
+              :`<div id="logo-preview" style="height:48px;width:120px;border:1px dashed var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text2)">Sin logo</div>`}
+            ${e.logo?`<button class="btn btn-ghost btn-sm" onclick="clearLogo()">🗑️ Quitar</button>`:''}
+          </div>
+          <input type="file" id="ec-logo" accept="image/*" style="font-size:12px" onchange="previewLogo(this)">
+          <input type="hidden" id="ec-logo-data" value="${e.logo||''}">
+          <p style="font-size:11px;color:var(--text2);margin-top:4px">PNG, JPG o SVG. Se usará en comprobantes y en la pantalla de selección.</p>
+        </div>
         <button class="btn btn-primary" onclick="saveEmpresaConfig()">Guardar datos</button>
       </div>
       <div class="card mb16">
@@ -1380,12 +1505,29 @@ async function renderConfig(){
       </div>
     </div>`;
 }
+function previewLogo(input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    document.getElementById('ec-logo-data').value=e.target.result;
+    const p=document.getElementById('logo-preview');
+    if(p.tagName==='IMG')p.src=e.target.result;
+    else{const img=document.createElement('img');img.id='logo-preview';img.src=e.target.result;img.style='height:48px;max-width:180px;object-fit:contain;border:1px solid var(--border);border-radius:6px;padding:4px';p.replaceWith(img);}
+  };
+  reader.readAsDataURL(file);
+}
+function clearLogo(){
+  document.getElementById('ec-logo-data').value='';
+  const p=document.getElementById('logo-preview');
+  if(p){const d=document.createElement('div');d.id='logo-preview';d.style='height:48px;width:120px;border:1px dashed var(--border);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text2)';d.textContent='Sin logo';p.replaceWith(d);}
+}
 async function saveEmpresaConfig(){
   const nombre=document.getElementById('ec-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
   const upd={..._empresa,nombre,cuit:document.getElementById('ec-cuit').value.trim(),
     direccion:document.getElementById('ec-dir').value.trim(),email:document.getElementById('ec-email').value.trim(),
-    telefono:document.getElementById('ec-tel').value.trim(),color:document.getElementById('ec-color').value};
+    telefono:document.getElementById('ec-tel').value.trim(),color:document.getElementById('ec-color').value,
+    logo:document.getElementById('ec-logo-data').value||_empresa.logo||''};
   showLoading('Guardando...');
   await DB.updateEmpresa(upd);
   hideLoading();
@@ -1566,6 +1708,13 @@ async function verFV(id){
   const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===fac.clienteId);
   const venc=fac.vencimiento&&fac.estado!=='cobrada'&&fac.vencimiento<today();
   openModal(`Factura ${fac.numero}`,`
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)">
+      <div>
+        <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px">${esc(_empresa.nombre||'')}</div>
+        ${_empresa.cuit?`<div style="font-size:11px;color:var(--text2)">CUIT: ${esc(_empresa.cuit)}</div>`:''}
+      </div>
+      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:44px;max-width:140px;object-fit:contain">`:''}
+    </div>
     <div class="detail-grid">
       <div><div class="dl">Cliente</div><div class="dv">${cl?esc(cl.nombre):'—'}</div></div>
       <div><div class="dl">Fecha</div><div class="dv">${esc(fac.fecha)}</div></div>
@@ -1640,9 +1789,12 @@ async function saveReciboRapido(facId){
 // ═══════════════════════════════════════════════════════════
 async function renderFacMasiva(){
   const eid=_empresa.id;
-  const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo&&x.serviciosHabituales&&x.serviciosHabituales.length);
+  const allCls=await DB.getE(eid,'clientes');
+  const clientes=allCls.filter(x=>x.activo&&((x.abonos&&x.abonos.length)||(x.serviciosHabituales&&x.serviciosHabituales.length)));
+  // helper: obtener lineas de abono del cliente (abonos tiene prioridad, fallback a serviciosHabituales)
+  const getAbonos=cl=>(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
   if(!clientes.length){
-    document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">📋</div><h3>Sin clientes con servicios habituales</h3><p>Asigná servicios habituales a los clientes para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
+    document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">📋</div><h3>Sin clientes con abonos</h3><p>Asigná abonos mensuales a los clientes activos para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
     return;
   }
   // render
@@ -1656,11 +1808,12 @@ async function renderFacMasiva(){
       <div class="tw mb16"><table><thead><tr><th><input type="checkbox" id="fm-all" onchange="fmToggleAll(this)"></th><th>Cliente</th><th>Servicios</th><th class="td-r">Total</th></tr></thead>
       <tbody id="fm-tbody">
         ${clientes.map(cl=>{
-          const sub=cl.serviciosHabituales.reduce((s,sv)=>s+(sv.precio*sv.cantidad),0);
+          const abs=getAbonos(cl);
+          const sub=abs.reduce((s,sv)=>s+(sv.precio*sv.cantidad),0);
           return`<tr>
             <td><input type="checkbox" class="fm-ck" value="${cl.id}" checked></td>
             <td>${esc(cl.nombre)}</td>
-            <td>${cl.serviciosHabituales.map(s=>`${esc(s.descripcion)} x${s.cantidad}`).join(', ')}</td>
+            <td>${abs.map(s=>`${esc(s.descripcion)} x${s.cantidad}`).join(', ')}</td>
             <td class="td-mono td-r">${fmtARS(sub)}</td>
           </tr>`;
         }).join('')}
@@ -1679,7 +1832,8 @@ async function ejecutarFacMasiva(){
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
   let fvs=await DB.getE(eid,'facturas_venta');let count=0;
   clientes.forEach(cl=>{
-    const lineas=cl.serviciosHabituales.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
+    const _abs=(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
+    const lineas=_abs.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
     const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
     const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;nums.FAC++;count++;
     fvs.push({id:genId(),numero,fecha,clienteId:cl.id,tipo:cl.condicionCobro,
@@ -1915,6 +2069,8 @@ async function renderTesoreria(){
   const fcPag=(await DB.getE(eid,'facturas_compra')).filter(x=>x.tipo==='contado'&&x.estado==='pagada');
   const fps=await DB.getE(eid,'formas_pago');
   const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
+  const clientes=await DB.getE(eid,'clientes');
+  const proveedores=await DB.getE(eid,'proveedores');
 
   // Movimientos: unificamos todo en una lista
   const movs=[];
