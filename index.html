@@ -375,6 +375,7 @@ const TABLE_MAP = {
   recibos_cobro:   'recibos_cobro',
   facturas_compra: 'facturas_compra',
   ordenes_pago:    'ordenes_pago',
+  notas_credito:   'notas_credito',
 };
 
 // Campos snake_case ↔ camelCase por tabla
@@ -388,6 +389,7 @@ const FIELD_TO_DB = {
   facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
   recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
   ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
+  notas_credito:   { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
   usuarios:        { empresaId:'empresa_id', empresasIds:'empresas_ids' },
 };
 const FIELD_FROM_DB = {};
@@ -810,6 +812,7 @@ const NAV_ITEMS=[
   {sec:'Operaciones',items:[
     {id:'ventas',icon:'💰',lbl:'Ventas'},
     {id:'compras',icon:'🛒',lbl:'Compras'},
+    {id:'cc-clientes',icon:'📒',lbl:'Ctas. Corrientes'},
     {id:'tesoreria',icon:'🏦',lbl:'Tesorería'},
     {id:'informes',icon:'📊',lbl:'Informes'},
   ]},
@@ -818,7 +821,8 @@ const NAV_ITEMS=[
     {id:'proveedores',icon:'🏭',lbl:'Proveedores'},
     {id:'prod-venta',icon:'📦',lbl:'Productos Venta'},
     {id:'prod-compra',icon:'🗃️',lbl:'Productos Compra'},
-    {id:'rubros',icon:'🏷️',lbl:'Rubros'},
+    {id:'rubros-venta',icon:'🏷️',lbl:'Rubros Venta'},
+    {id:'rubros-compra',icon:'🏷️',lbl:'Rubros Compra'},
     {id:'formas-pago',icon:'💳',lbl:'Formas de Pago'},
     {id:'bancos',icon:'🏛️',lbl:'Bancos'},
   ]},
@@ -831,13 +835,15 @@ const SEC_INFO={
   dashboard:['Inicio','Panel principal'],
   ventas:['Ventas','Facturas y recibos de cobro'],
   compras:['Compras','Facturas de compra y pagos'],
+  'cc-clientes':['Cuentas Corrientes','Saldos y movimientos por cliente'],
   tesoreria:['Tesorería','Caja, bancos y flujo de fondos'],
   informes:['Informes','Reportes de gestión'],
   clientes:['Clientes','Maestro de clientes'],
   proveedores:['Proveedores','Maestro de proveedores'],
   'prod-venta':['Productos de Venta','Catálogo de productos y servicios'],
   'prod-compra':['Productos de Compra','Catálogo de compras'],
-  rubros:['Rubros','Clasificación de gastos'],
+  'rubros-venta':['Rubros de Venta','Clasificación de ventas y servicios'],
+  'rubros-compra':['Rubros de Compra','Clasificación de gastos y compras'],
   'formas-pago':['Formas de Pago','Métodos de cobro y pago'],
   bancos:['Bancos','Cuentas bancarias'],
   usuarios:['Usuarios','Gestión de acceso'],
@@ -868,11 +874,14 @@ async function navTo(sec){
   showLoading('Cargando...');
   const map={
     dashboard:renderDashboard,ventas:renderVentas,compras:renderCompras,
+    'cc-clientes':renderCCClientes,
     tesoreria:renderTesoreria,informes:renderInformes,
     clientes:renderClientes,proveedores:renderProveedores,
     'prod-venta':()=>renderProductos('prod-venta'),
     'prod-compra':()=>renderProductos('prod-compra'),
-    rubros:renderRubros,'formas-pago':renderFormasPago,
+    'rubros-venta':()=>renderRubros('venta'),
+    'rubros-compra':()=>renderRubros('compra'),
+    'formas-pago':renderFormasPago,
     bancos:renderBancos,usuarios:renderUsuarios,config:renderConfig,
   };
   if(map[sec]) await map[sec](c);
@@ -1063,7 +1072,7 @@ async function actualizarAbonosGlobal(){
     await DB.upsertItem(eid,'clientes',{...cl,abonos:newAbonos});
     updated++;
   }
-  DB._cache[eid+':clientes']=null;
+  DB._clearCache(eid,'clientes');
   hideLoading();
   toast(`Abonos actualizados en ${updated} cliente${updated!==1?'s':''} (${pct>0?'+':''}${pct}%)  ✓`,'success');
 }
@@ -1254,42 +1263,57 @@ async function actualizarPreciosVenta(){
 // ═══════════════════════════════════════════════════════════
 // RUBROS
 // ═══════════════════════════════════════════════════════════
-async function renderRubros(){
+async function renderRubros(tipo){
   const eid=_empresa.id;
-  const items=await DB.getE(eid,'rubros');
+  const todos=await DB.getE(eid,'rubros');
+  // tipo puede ser 'venta' o 'compra'; filtramos por tipo o 'ambos'
+  const items=todos.filter(r=>!r.tipo||r.tipo===tipo||r.tipo==='ambos');
+  const tipoLabel=tipo==='venta'?'Venta':'Compra';
+  const cbName=tipo==='venta'?'renderRubros(\'venta\')':'renderRubros(\'compra\')';
   document.getElementById('main-content').innerHTML=`
-    <div class="toolbar"><div style="flex:1"></div>${xlsxToolbarBtns('rubros')}<button class="btn btn-primary btn-sm" onclick="openRubroModal()">+ Nuevo rubro</button></div>
+    <div class="toolbar"><div style="flex:1"></div>${xlsxToolbarBtns('rubros')}<button class="btn btn-primary btn-sm" onclick="openRubroModal('','${tipo}')">+ Nuevo rubro</button></div>
     <div class="tw"><table><thead><tr><th>Nombre</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${items.map(r=>`<tr>
-      <td>${esc(r.nombre)}</td>
-      <td><span class="sdot ${r.activo?'son':'soff'}"></span>${r.activo?'Activo':'Inactivo'}</td>
-      <td><div class="td-act">
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="openRubroModal('${r.id}')">✏️</button>
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('rubros','${r.id}',renderRubros)">🗑️</button>
-      </div></td>
-    </tr>`).join('')}
+    `+items.map(function(r){
+      var rid=r.id;var rtipo=tipo;
+      return '<tr>'
+        +'<td>'+esc(r.nombre)+'</td>'
+        +'<td><span class="sdot '+(r.activo?'son':'soff')+'"></span>'+(r.activo?'Activo':'Inactivo')+'</td>'
+        +'<td><div class="td-act">'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openRubroModal('+JSON.stringify(rid)+','+JSON.stringify(rtipo)+')">✏️</button>'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('+JSON.stringify('rubros')+','+JSON.stringify(rid)+',function(){renderRubros('+JSON.stringify(rtipo)+')})">🗑️</button>'
+        +'</div></td>'
+        +'</tr>';
+    }).join('')+`
     </tbody></table></div>`;
 }
 
-async function openRubroModal(id){
+async function openRubroModal(id,tipo){
   const eid=_empresa.id;
   const it=id?(await DB.getE(eid,'rubros')).find(x=>x.id===id):null;
-  const v=it||{nombre:'',activo:true};
+  const tipoDefault=tipo||'compra';
+  const v=it||{nombre:'',activo:true,tipo:tipoDefault};
   openModal(id?'Editar rubro':'Nuevo rubro',`
     <div class="fg"><label>Nombre *</label><input id="rb-n" value="${esc(v.nombre)}" placeholder="Ej: Sueldos"></div>
+    <div class="fg"><label>Tipo</label><select id="rb-tipo">
+      <option value="venta"${v.tipo==='venta'?' selected':''}>Rubro de Venta</option>
+      <option value="compra"${(v.tipo==='compra'||!v.tipo)?' selected':''}>Rubro de Compra</option>
+      <option value="ambos"${v.tipo==='ambos'?' selected':''}>Ambos</option>
+    </select></div>
     <div class="fg"><label>Estado</label><select id="rb-act"><option value="1"${v.activo?' selected':''}>Activo</option><option value="0"${!v.activo?' selected':''}>Inactivo</option></select></div>
-  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:`saveRubro('${id||''}')`}]);
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:'saveRubro('+JSON.stringify(id||'')+')'}]);
   setTimeout(()=>document.getElementById('rb-n').focus(),50);
 }
 async function saveRubro(id){
   const nombre=document.getElementById('rb-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
-  const eid=_empresa.id;let items=await DB.getE(eid,'rubros');
-  const obj={id:id||genId(),nombre,activo:document.getElementById('rb-act').value==='1'};
+  const eid=_empresa.id;
+  const tipoVal=document.getElementById('rb-tipo').value;
+  const obj={id:id||genId(),nombre,tipo:tipoVal,activo:document.getElementById('rb-act').value==='1'};
   showLoading('Guardando...');
   await DB.upsertItem(eid,'rubros',obj);
   hideLoading();
-  closeModal();toast('Guardado','success');renderRubros();
+  closeModal();toast('Guardado','success');
+  renderRubros(tipoVal==='ambos'?'compra':tipoVal);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1603,6 +1627,7 @@ async function renderVentas(){
         <td><div class="td-act">
           <button class="btn btn-ghost btn-sm btn-icon" onclick="verFV('${fac.id}')">👁️</button>
           ${fac.tipo==='cc'&&fac.estado!=='cobrada'?`<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirReciboRapido('${fac.id}')" title="Registrar cobro">💵</button>`:''}
+          ${fac.tipo==='cc'?`<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente('${fac.clienteId}')" title="Nota de crédito">📝</button>`:''}
           <button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('facturas_venta','${fac.id}',renderVentas)">🗑️</button>
         </div></td>
       </tr>`}).join('')}
@@ -1896,6 +1921,7 @@ async function renderCompras(){
         <td><div class="td-act">
           <button class="btn btn-ghost btn-sm btn-icon" onclick="verFC('${fac.id}')">👁️</button>
           ${fac.tipo==='cc'&&fac.estado!=='pagada'?`<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirPagoRapido('${fac.id}')" title="Registrar pago">💸</button>`:''}
+          ${fac.tipo==='cc'?`<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoProveedor('${fac.proveedorId}')" title="Nota de crédito">📝</button>`:''}
           <button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('facturas_compra','${fac.id}',renderCompras)">🗑️</button>
         </div></td>
       </tr>`}).join('')}
@@ -2078,8 +2104,11 @@ async function savePagoRapido(facId){
 // ═══════════════════════════════════════════════════════════
 // TESORERÍA
 // ═══════════════════════════════════════════════════════════
+var _tesDesde='',_tesHasta='',_tesBanco='',_tesFP='',_tesTipo='';
 async function renderTesoreria(){
   const eid=_empresa.id;
+  if(!_tesDesde)_tesDesde=today().slice(0,7)+'-01';
+  if(!_tesHasta)_tesHasta=today();
   const recCob=await DB.getE(eid,'recibos_cobro');
   const ordPago=await DB.getE(eid,'ordenes_pago');
   const fvCob=(await DB.getE(eid,'facturas_venta')).filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
@@ -2089,82 +2118,227 @@ async function renderTesoreria(){
   const clientes=await DB.getE(eid,'clientes');
   const proveedores=await DB.getE(eid,'proveedores');
 
-  // Movimientos: unificamos todo en una lista
+  // Movimientos: unificamos todo en una lista con bancoId
   const movs=[];
-  recCob.forEach(r=>movs.push({fecha:r.fecha,tipo:'Cobro cliente',numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId}));
-  fvCob.forEach(f=>movs.push({fecha:f.fecha,tipo:'Venta contado',numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId}));
-  ordPago.forEach(o=>movs.push({fecha:o.fecha,tipo:'Pago proveedor',numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId}));
-  fcPag.forEach(f=>movs.push({fecha:f.fecha,tipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId}));
+  recCob.forEach(r=>movs.push({fecha:r.fecha,tipo:'Cobro',subtipo:'Cobro cliente',numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId,bancoId:r.bancoId||'',ref:r.clienteId,entidad:clientes.find(x=>x.id===r.clienteId)}));
+  fvCob.forEach(f=>movs.push({fecha:f.fecha,tipo:'Cobro',subtipo:'Venta contado',numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId,bancoId:f.bancoId||'',ref:f.clienteId,entidad:clientes.find(x=>x.id===f.clienteId)}));
+  ordPago.forEach(o=>movs.push({fecha:o.fecha,tipo:'Pago',subtipo:'Pago proveedor',numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId,bancoId:o.bancoId||'',ref:o.proveedorId,entidad:proveedores.find(x=>x.id===o.proveedorId)}));
+  fcPag.forEach(f=>movs.push({fecha:f.fecha,tipo:'Pago',subtipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,bancoId:f.bancoId||'',ref:f.proveedorId,entidad:proveedores.find(x=>x.id===f.proveedorId)}));
   movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
 
-  const totalIn=movs.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
-  const totalOut=movs.filter(m=>m.dir==='out').reduce((s,m)=>s+m.importe,0);
+  // Aplicar filtros
+  var movsFilt=movs.filter(function(m){
+    if(_tesDesde&&m.fecha<_tesDesde)return false;
+    if(_tesHasta&&m.fecha>_tesHasta)return false;
+    if(_tesBanco&&m.bancoId!==_tesBanco)return false;
+    if(_tesFP&&m.fpId!==_tesFP)return false;
+    if(_tesTipo&&m.tipo!==_tesTipo)return false;
+    return true;
+  });
+
+  const totalIn=movsFilt.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
+  const totalOut=movsFilt.filter(m=>m.dir==='out').reduce((s,m)=>s+m.importe,0);
   const saldo=totalIn-totalOut;
 
   // Proyección: facturas CC pendientes
   const fvPend=(await DB.getE(eid,'facturas_venta')).filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
   const fcPend=(await DB.getE(eid,'facturas_compra')).filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
 
+  var bancosOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(_tesBanco===b.id?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
+  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(_tesFP===fp.id?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
+
+  var movRows=movsFilt.map(function(m){
+    var fp=fps.find(x=>x.id===m.fpId);
+    var bk=bancos.find(x=>x.id===m.bancoId);
+    var entNombre=m.entidad?esc(m.entidad.nombre):'—';
+    return '<tr>'
+      +'<td>'+esc(m.fecha)+'</td>'
+      +'<td>'+esc(m.subtipo)+'</td>'
+      +'<td class="td-mono">'+esc(m.numero)+'</td>'
+      +'<td>'+entNombre+'</td>'
+      +'<td>'+(fp?esc(fp.nombre):'—')+'</td>'
+      +'<td>'+(bk?esc(bk.nombre):'—')+'</td>'
+      +'<td class="td-mono td-r" style="color:var(--green)">'+(m.dir==='in'?fmtARS(m.importe):'—')+'</td>'
+      +'<td class="td-mono td-r" style="color:var(--red)">'+(m.dir==='out'?fmtARS(m.importe):'—')+'</td>'
+      +'</tr>';
+  }).join('');
+
   document.getElementById('main-content').innerHTML=`
-    <div class="g4 mb24">
-      <div class="stat-card"><div class="stat-lbl">Total ingresos</div><div class="stat-val" style="color:var(--green);font-size:18px">${fmtARS(totalIn)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Total egresos</div><div class="stat-val" style="color:var(--red);font-size:18px">${fmtARS(totalOut)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Saldo neto</div><div class="stat-val" style="color:${saldo>=0?'var(--green)':'var(--red)'};font-size:18px">${fmtARS(saldo)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Movimientos</div><div class="stat-val" style="color:var(--accent);font-size:18px">${movs.length}</div></div>
+    <div class="card mb20">
+      <div class="flex-c gap8 flex-wrap">
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Desde</label><input type="date" value="${_tesDesde}" onchange="_tesDesde=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Hasta</label><input type="date" value="${_tesHasta}" onchange="_tesHasta=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Banco</label><select onchange="_tesBanco=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option>${bancosOpts}</select></div>
+        <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Forma de pago</label><select onchange="_tesFP=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todas</option>${fpOpts}</select></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Tipo</label><select onchange="_tesTipo=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option><option value="Cobro"${_tesTipo==='Cobro'?' selected':''}>Cobranzas</option><option value="Pago"${_tesTipo==='Pago'?' selected':''}>Pagos</option></select></div>
+        <div class="fg" style="margin:0;flex:0 0 auto;align-self:flex-end"><button class="btn btn-ghost btn-sm" onclick="_tesDesde='';_tesHasta='';_tesBanco='';_tesFP='';_tesTipo='';renderTesoreria()">↺ Limpiar</button></div>
+      </div>
     </div>
 
-    <div class="g2 mb24" style="gap:20px;align-items:start">
-      <div class="card">
-        <h3 class="fw6 mb16" style="font-size:14px">Movimientos de fondos</h3>
-        ${movs.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th>Forma pago</th><th class="td-r">Ingreso</th><th class="td-r">Egreso</th></tr></thead>
-        <tbody>${movs.slice(0,30).map(m=>{
-          const fp=fps.find(x=>x.id===m.fpId);
-          return`<tr>
-            <td>${esc(m.fecha)}</td><td>${esc(m.tipo)}</td>
-            <td class="td-mono">${esc(m.numero)}</td>
-            <td>${fp?esc(fp.nombre):'—'}</td>
-            <td class="td-mono td-r" style="color:var(--green)">${m.dir==='in'?fmtARS(m.importe):'—'}</td>
-            <td class="td-mono td-r" style="color:var(--red)">${m.dir==='out'?fmtARS(m.importe):'—'}</td>
-          </tr>`;}).join('')}
-        </tbody></table></div>`
-        :`<div class="empty" style="padding:30px"><div class="ei">📋</div><p>Sin movimientos registrados</p></div>`}
-      </div>
+    <div class="g4 mb24">
+      <div class="stat-card"><div class="stat-lbl">Ingresos filtrados</div><div class="stat-val" style="color:var(--green);font-size:18px">${fmtARS(totalIn)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Egresos filtrados</div><div class="stat-val" style="color:var(--red);font-size:18px">${fmtARS(totalOut)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Saldo neto</div><div class="stat-val" style="color:${saldo>=0?'var(--green)':'var(--red)'};font-size:18px">${fmtARS(saldo)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Movimientos</div><div class="stat-val" style="color:var(--accent);font-size:18px">${movsFilt.length}</div></div>
+    </div>
 
-      <div>
-        <div class="card mb16">
-          <h3 class="fw6 mb12" style="font-size:14px">Proyección — Cobros pendientes</h3>
-          ${fvPend.length?fvPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const cl=clientes.find(x=>x.id===f.clienteId);
-            const venc=f.vencimiento&&f.vencimiento<today();
-            return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-              <div><div style="font-size:13px;font-weight:500">${cl?esc(cl.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
-              <div class="td-mono" style="color:var(--green);font-weight:600">${fmtARS(f.total)}</div>
-            </div>`;}).join('')
-          :`<p style="font-size:13px;color:var(--text2)">Sin cobros pendientes 🎉</p>`}
-        </div>
-        <div class="card">
-          <h3 class="fw6 mb12" style="font-size:14px">Proyección — Pagos pendientes</h3>
-          ${fcPend.length?fcPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
-            const pv=proveedores.find(x=>x.id===f.proveedorId);
-            const venc=f.vencimiento&&f.vencimiento<today();
-            return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-              <div><div style="font-size:13px;font-weight:500">${pv?esc(pv.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
-              <div class="td-mono" style="color:var(--red);font-weight:600">${fmtARS(f.total)}</div>
-            </div>`;}).join('')
-          :`<p style="font-size:13px;color:var(--text2)">Sin pagos pendientes 🎉</p>`}
-        </div>
+    <div class="toolbar mb16" style="padding:0">
+      <div style="flex:1;font-size:14px;font-weight:600">Movimientos de fondos</div>
+      <button class="btn btn-secondary btn-sm" onclick="abrirCobroDirecto()">+ Registrar cobro</button>
+      <button class="btn btn-secondary btn-sm" onclick="abrirPagoDirecto()">+ Registrar pago</button>
+    </div>
+
+    <div class="card mb24">
+      ${movsFilt.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th>Entidad</th><th>Forma pago</th><th>Banco</th><th class="td-r">Ingreso</th><th class="td-r">Egreso</th></tr></thead>
+      <tbody>${movRows}</tbody></table></div>`
+      :`<div class="empty" style="padding:30px"><div class="ei">📋</div><p>Sin movimientos en el período seleccionado</p></div>`}
+    </div>
+
+    <div class="g2" style="gap:20px;align-items:start">
+      <div class="card">
+        <h3 class="fw6 mb12" style="font-size:14px">Proyección — Cobros pendientes</h3>
+        ${fvPend.length?fvPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
+          const cl=clientes.find(x=>x.id===f.clienteId);
+          const venc=f.vencimiento&&f.vencimiento<today();
+          return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div><div style="font-size:13px;font-weight:500">${cl?esc(cl.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
+            <div class="td-mono" style="color:var(--green);font-weight:600">${fmtARS(f.total)}</div>
+          </div>`;}).join('')
+        :`<p style="font-size:13px;color:var(--text2)">Sin cobros pendientes 🎉</p>`}
+      </div>
+      <div class="card">
+        <h3 class="fw6 mb12" style="font-size:14px">Proyección — Pagos pendientes</h3>
+        ${fcPend.length?fcPend.sort((a,b)=>a.vencimiento>b.vencimiento?1:-1).map(f=>{
+          const pv=proveedores.find(x=>x.id===f.proveedorId);
+          const venc=f.vencimiento&&f.vencimiento<today();
+          return`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+            <div><div style="font-size:13px;font-weight:500">${pv?esc(pv.nombre):'—'}</div><div style="font-size:11px;color:${venc?'var(--red)':'var(--text2)'}">${esc(f.numero)} · vence ${esc(f.vencimiento||'—')}</div></div>
+            <div class="td-mono" style="color:var(--red);font-weight:600">${fmtARS(f.total)}</div>
+          </div>`;}).join('')
+        :`<p style="font-size:13px;color:var(--text2)">Sin pagos pendientes 🎉</p>`}
       </div>
     </div>`;
+}
+
+async function abrirCobroDirecto(){
+  const eid=_empresa.id;
+  const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
+  const fps=await DB.getE(eid,'formas_pago');
+  const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
+  var clOpts=clientes.map(function(c){return '<option value="'+c.id+'">'+esc(c.nombre)+'</option>';}).join('');
+  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'">'+esc(fp.nombre)+'</option>';}).join('');
+  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'">'+esc(b.nombre)+'</option>';}).join('');
+  openModal('Registrar cobro',`
+    <div class="fg"><label>Cliente</label><select id="cd-cl"><option value="">Sin cliente</option>${clOpts}</select></div>
+    <div class="row2">
+      <div class="fg"><label>Fecha *</label><input id="cd-f" type="date" value="${today()}"></div>
+      <div class="fg"><label>Importe *</label><input id="cd-imp" type="number" step="0.01" placeholder="0.00"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Forma de pago *</label><select id="cd-fp"><option value="">Seleccioná...</option>${fpOpts}</select></div>
+      <div class="fg"><label>Banco</label><select id="cd-bk"><option value="">Sin banco</option>${bkOpts}</select></div>
+    </div>
+    <div class="fg"><label>Concepto / Observaciones</label><textarea id="cd-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar',cls:'btn-primary',fn:'saveCobroDirecto()'}]);
+}
+async function saveCobroDirecto(){
+  const eid=_empresa.id;
+  const importe=parseFloat(document.getElementById('cd-imp').value)||0;
+  if(!importe){toast('El importe es obligatorio','error');return}
+  const fpId=document.getElementById('cd-fp').value;
+  if(!fpId){toast('Seleccioná una forma de pago','error');return}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{RC:1};
+  if(!nums.RC)nums.RC=1;
+  const numero='RC-'+String(nums.RC).padStart(5,'0');nums.RC++;
+  await DB.setCfg(eid,{nums});
+  const rec={id:genId(),numero,fecha:document.getElementById('cd-f').value,
+    clienteId:document.getElementById('cd-cl').value||null,
+    importe,formaPagoId:fpId,
+    bancoId:document.getElementById('cd-bk').value||null,
+    facturaIds:[],
+    observaciones:document.getElementById('cd-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando cobro...');
+  await DB.upsertItem(eid,'recibos_cobro',rec);
+  hideLoading();
+  closeModal();toast('Cobro registrado · '+numero,'success');renderTesoreria();
+}
+
+async function abrirPagoDirecto(){
+  const eid=_empresa.id;
+  const provs=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
+  const fps=await DB.getE(eid,'formas_pago');
+  const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
+  var pvOpts=provs.map(function(p){return '<option value="'+p.id+'">'+esc(p.nombre)+'</option>';}).join('');
+  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'">'+esc(fp.nombre)+'</option>';}).join('');
+  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'">'+esc(b.nombre)+'</option>';}).join('');
+  openModal('Registrar pago',`
+    <div class="fg"><label>Proveedor</label><select id="pd-pv"><option value="">Sin proveedor</option>${pvOpts}</select></div>
+    <div class="row2">
+      <div class="fg"><label>Fecha *</label><input id="pd-f" type="date" value="${today()}"></div>
+      <div class="fg"><label>Importe *</label><input id="pd-imp" type="number" step="0.01" placeholder="0.00"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Forma de pago *</label><select id="pd-fp"><option value="">Seleccioná...</option>${fpOpts}</select></div>
+      <div class="fg"><label>Banco</label><select id="pd-bk"><option value="">Sin banco</option>${bkOpts}</select></div>
+    </div>
+    <div class="fg"><label>Concepto / Observaciones</label><textarea id="pd-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar',cls:'btn-primary',fn:'savePagoDirecto()'}]);
+}
+async function savePagoDirecto(){
+  const eid=_empresa.id;
+  const importe=parseFloat(document.getElementById('pd-imp').value)||0;
+  if(!importe){toast('El importe es obligatorio','error');return}
+  const fpId=document.getElementById('pd-fp').value;
+  if(!fpId){toast('Seleccioná una forma de pago','error');return}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{OP:1};
+  if(!nums.OP)nums.OP=1;
+  const numero='OP-'+String(nums.OP).padStart(5,'0');nums.OP++;
+  await DB.setCfg(eid,{nums});
+  const op={id:genId(),numero,fecha:document.getElementById('pd-f').value,
+    proveedorId:document.getElementById('pd-pv').value||null,
+    importe,formaPagoId:fpId,
+    bancoId:document.getElementById('pd-bk').value||null,
+    facturaIds:[],
+    observaciones:document.getElementById('pd-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando pago...');
+  await DB.upsertItem(eid,'ordenes_pago',op);
+  hideLoading();
+  closeModal();toast('Pago registrado · '+numero,'success');renderTesoreria();
 }
 
 // ═══════════════════════════════════════════════════════════
 // INFORMES
 // ═══════════════════════════════════════════════════════════
-let _infDesde='', _infHasta='';
+var _infDesde='',_infHasta='',_infTab='economico';
 async function renderInformes(){
   const eid=_empresa.id;
   if(!_infDesde)_infDesde=today().slice(0,7)+'-01';
   if(!_infHasta)_infHasta=today();
+
+  var filtros=`<div class="card mb20">
+    <div class="flex-c gap8">
+      <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Desde</label><input type="date" value="${_infDesde}" onchange="_infDesde=this.value;renderInformes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+      <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Hasta</label><input type="date" value="${_infHasta}" onchange="_infHasta=this.value;renderInformes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+      <div style="flex:1"></div>
+      <div style="display:flex;gap:6px;align-self:flex-end">
+        <button class="btn btn-sm ${_infTab==='economico'?'btn-primary':'btn-secondary'}" onclick="_infTab='economico';renderInformes()">📊 Informe Económico</button>
+        <button class="btn btn-sm ${_infTab==='financiero'?'btn-primary':'btn-secondary'}" onclick="_infTab='financiero';renderInformes()">💵 Informe Financiero</button>
+      </div>
+    </div>
+  </div>`;
+
+  const c=document.getElementById('main-content');
+  if(_infTab==='financiero'){
+    await renderInformeFinanciero(c,filtros);
+  } else {
+    await renderInformeEconomico(c,filtros);
+  }
+}
+
+async function renderInformeEconomico(c,filtros){
+  const eid=_empresa.id;
   const fv=(await DB.getE(eid,'facturas_venta')).filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
   const fc=(await DB.getE(eid,'facturas_compra')).filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta);
   const clientes=await DB.getE(eid,'clientes');
@@ -2173,35 +2347,20 @@ async function renderInformes(){
 
   const totalVentas=fv.reduce((s,f)=>s+f.total,0);
   const totalCobrado=fv.filter(f=>f.estado==='cobrada').reduce((s,f)=>s+f.total,0);
-  const totalPendCobro=fv.filter(f=>f.estado!=='cobrada').reduce((s,f)=>s+f.total,0);
   const totalCompras=fc.reduce((s,f)=>s+f.total,0);
-  const totalPagado=fc.filter(f=>f.estado==='pagada').reduce((s,f)=>s+f.total,0);
   const resultado=totalVentas-totalCompras;
 
-  // rubros breakdown
   const rubroTotals={};
   fc.forEach(f=>(f.lineas||[]).forEach(l=>{if(l.rubro)rubroTotals[l.rubro]=(rubroTotals[l.rubro]||0)+(l.cantidad*l.precio)}));
   if(!Object.keys(rubroTotals).length)fc.forEach(f=>{if(f.rubroId)rubroTotals[f.rubroId]=(rubroTotals[f.rubroId]||0)+f.total});
 
-  document.getElementById('main-content').innerHTML=`
+  c.innerHTML=filtros+`
     <div class="card mb20">
-      <div class="flex-c gap8 mb16">
-        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Desde</label><input type="date" value="${_infDesde}" onchange="_infDesde=this.value;renderInformes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
-        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Hasta</label><input type="date" value="${_infHasta}" onchange="_infHasta=this.value;renderInformes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
-      </div>
-
       <h3 class="fw6 mb12" style="font-size:14px">Resultado económico del período</h3>
       <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
-        ${[
-          ['Total Ventas devengadas',fmtARS(totalVentas),'var(--text)'],
-          ['Total Compras y Gastos devengados',fmtARS(totalCompras),'var(--text)'],
-          ['','',''],
-          ['RESULTADO BRUTO',fmtARS(resultado),resultado>=0?'var(--green)':'var(--red)'],
-        ].map(([k,v,c])=>k?`<div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)">
-          <span style="font-size:13px${v.includes('RESULT')?';font-weight:700':''}">${k}</span>
-          <span style="font-family:var(--mono);font-weight:600;color:${c}">${v}</span>
-        </div>`:''
-        ).join('')}
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Ventas devengadas</span><span style="font-family:var(--mono);font-weight:600;color:var(--text)">${fmtARS(totalVentas)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Compras y Gastos devengados</span><span style="font-family:var(--mono);font-weight:600;color:var(--text)">${fmtARS(totalCompras)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:12px 14px;background:var(--surface2)"><span style="font-size:14px;font-weight:700">RESULTADO BRUTO</span><span style="font-family:var(--mono);font-weight:700;font-size:15px;color:${resultado>=0?'var(--green)':'var(--red)'}">${fmtARS(resultado)}</span></div>
       </div>
     </div>
 
@@ -2219,26 +2378,20 @@ async function renderInformes(){
         </tbody></table></div>`
         :`<p class="text-muted" style="font-size:13px">Sin ventas en el período</p>`}
       </div>
-
       <div>
         <div class="card mb16">
           <h3 class="fw6 mb12" style="font-size:14px">Gastos por rubro</h3>
           ${Object.keys(rubroTotals).length?Object.entries(rubroTotals).sort((a,b)=>b[1]-a[1]).map(([rid,tot])=>{
             const rub=rubros.find(x=>x.id===rid);const pct=totalCompras?Math.round(tot/totalCompras*100):0;
-            return`<div style="margin-bottom:12px">
-              <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">
-                <span>${rub?esc(rub.nombre):rid}</span><span class="td-mono">${fmtARS(tot)}</span>
-              </div>
-              <div style="height:4px;background:var(--surface3);border-radius:2px"><div style="height:4px;width:${pct}%;background:var(--accent);border-radius:2px"></div></div>
-            </div>`;}).join('')
+            return`<div style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px"><span>${rub?esc(rub.nombre):rid}</span><span class="td-mono">${fmtARS(tot)}</span></div>
+            <div style="height:4px;background:var(--surface3);border-radius:2px"><div style="height:4px;width:${pct}%;background:var(--accent);border-radius:2px"></div></div></div>`;}).join('')
           :`<p class="text-muted" style="font-size:13px">Sin datos de rubros</p>`}
         </div>
         <div class="card">
           <h3 class="fw6 mb12" style="font-size:14px">Compras del período <span class="badge badge-blue" style="margin-left:8px">${fc.length}</span></h3>
           ${fc.length?`<div class="tw"><table><thead><tr><th>N°</th><th>Proveedor</th><th class="td-r">Total</th><th>Estado</th></tr></thead>
           <tbody>${fc.map(f=>{const pv=provs.find(x=>x.id===f.proveedorId);return`<tr>
-            <td class="td-mono">${esc(f.numero)}</td>
-            <td>${pv?esc(pv.nombre):'—'}</td>
+            <td class="td-mono">${esc(f.numero)}</td><td>${pv?esc(pv.nombre):'—'}</td>
             <td class="td-mono td-r">${fmtARS(f.total)}</td>
             <td><span class="badge ${f.estado==='pagada'?'badge-green':'badge-yellow'}">${f.estado==='pagada'?'Pagada':'Pendiente'}</span></td>
           </tr>`}).join('')}
@@ -2249,31 +2402,281 @@ async function renderInformes(){
     </div>`;
 }
 
+async function renderInformeFinanciero(c,filtros){
+  const eid=_empresa.id;
+  const recCob=await DB.getE(eid,'recibos_cobro');
+  const ordPago=await DB.getE(eid,'ordenes_pago');
+  const fvCob=(await DB.getE(eid,'facturas_venta')).filter(x=>x.tipo==='contado'&&x.estado==='cobrada');
+  const fcPag=(await DB.getE(eid,'facturas_compra')).filter(x=>x.tipo==='contado'&&x.estado==='pagada');
+  const fps=await DB.getE(eid,'formas_pago');
+  const clientes=await DB.getE(eid,'clientes');
+  const provs=await DB.getE(eid,'proveedores');
+
+  const movs=[];
+  recCob.filter(r=>r.fecha>=_infDesde&&r.fecha<=_infHasta).forEach(r=>{const cl=clientes.find(x=>x.id===r.clienteId);movs.push({fecha:r.fecha,tipo:'Cobro',desc:'Cobro cliente'+(cl?' · '+cl.nombre:''),numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId});});
+  fvCob.filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta).forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);movs.push({fecha:f.fecha,tipo:'Cobro',desc:'Venta contado'+(cl?' · '+cl.nombre:''),numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId});});
+  ordPago.filter(o=>o.fecha>=_infDesde&&o.fecha<=_infHasta).forEach(o=>{const pv=provs.find(x=>x.id===o.proveedorId);movs.push({fecha:o.fecha,tipo:'Pago',desc:'Pago proveedor'+(pv?' · '+pv.nombre:''),numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId});});
+  fcPag.filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta).forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);movs.push({fecha:f.fecha,tipo:'Pago',desc:'Compra contado'+(pv?' · '+pv.nombre:''),numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId});});
+  movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
+
+  const totalIn=movs.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
+  const totalOut=movs.filter(m=>m.dir==='out').reduce((s,m)=>s+m.importe,0);
+  const resultado=totalIn-totalOut;
+
+  // Agrupado por forma de pago
+  const porFP={};
+  movs.forEach(m=>{const k=m.fpId||'_';if(!porFP[k]){porFP[k]={in:0,out:0};}if(m.dir==='in')porFP[k].in+=m.importe;else porFP[k].out+=m.importe;});
+
+  // Agrupado por mes
+  const porMes={};
+  movs.forEach(m=>{const mes=m.fecha.slice(0,7);if(!porMes[mes]){porMes[mes]={in:0,out:0};}if(m.dir==='in')porMes[mes].in+=m.importe;else porMes[mes].out+=m.importe;});
+
+  var movRows=movs.map(function(m){
+    var fp=fps.find(x=>x.id===m.fpId);
+    return '<tr>'
+      +'<td>'+esc(m.fecha)+'</td>'
+      +'<td>'+esc(m.desc)+'</td>'
+      +'<td class="td-mono">'+esc(m.numero)+'</td>'
+      +'<td>'+(fp?esc(fp.nombre):'—')+'</td>'
+      +'<td class="td-mono td-r" style="color:var(--green)">'+(m.dir==='in'?fmtARS(m.importe):'—')+'</td>'
+      +'<td class="td-mono td-r" style="color:var(--red)">'+(m.dir==='out'?fmtARS(m.importe):'—')+'</td>'
+      +'</tr>';
+  }).join('');
+
+  c.innerHTML=filtros+`
+    <div class="card mb20">
+      <h3 class="fw6 mb12" style="font-size:14px">Resultado financiero del período</h3>
+      <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total cobranzas</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">${fmtARS(totalIn)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total pagos</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">${fmtARS(totalOut)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:12px 14px;background:var(--surface2)"><span style="font-size:14px;font-weight:700">RESULTADO DE CAJA</span><span style="font-family:var(--mono);font-weight:700;font-size:15px;color:${resultado>=0?'var(--green)':'var(--red)'}">${fmtARS(resultado)}</span></div>
+      </div>
+    </div>
+
+    <div class="g2 mb20" style="gap:20px;align-items:start">
+      <div class="card">
+        <h3 class="fw6 mb12" style="font-size:14px">Por forma de pago</h3>
+        <div class="tw"><table><thead><tr><th>Forma de pago</th><th class="td-r">Ingresos</th><th class="td-r">Egresos</th><th class="td-r">Neto</th></tr></thead><tbody>
+        ${Object.entries(porFP).map(function(entry){
+          var kid=entry[0];var v=entry[1];
+          var fp=fps.find(x=>x.id===kid);
+          var neto=v.in-v.out;
+          return '<tr>'
+            +'<td>'+(fp?esc(fp.nombre):'Sin forma de pago')+'</td>'
+            +'<td class="td-mono td-r" style="color:var(--green)">'+fmtARS(v.in)+'</td>'
+            +'<td class="td-mono td-r" style="color:var(--red)">'+fmtARS(v.out)+'</td>'
+            +'<td class="td-mono td-r" style="font-weight:600;color:'+(neto>=0?'var(--green)':'var(--red)')+'">'+fmtARS(neto)+'</td>'
+            +'</tr>';
+        }).join('')}
+        </tbody></table></div>
+      </div>
+      <div class="card">
+        <h3 class="fw6 mb12" style="font-size:14px">Por mes</h3>
+        <div class="tw"><table><thead><tr><th>Mes</th><th class="td-r">Ingresos</th><th class="td-r">Egresos</th><th class="td-r">Neto</th></tr></thead><tbody>
+        ${Object.entries(porMes).sort().map(function(entry){
+          var mes=entry[0];var v=entry[1];
+          var neto=v.in-v.out;
+          return '<tr>'
+            +'<td class="td-mono">'+esc(mes)+'</td>'
+            +'<td class="td-mono td-r" style="color:var(--green)">'+fmtARS(v.in)+'</td>'
+            +'<td class="td-mono td-r" style="color:var(--red)">'+fmtARS(v.out)+'</td>'
+            +'<td class="td-mono td-r" style="font-weight:600;color:'+(neto>=0?'var(--green)':'var(--red)')+'">'+fmtARS(neto)+'</td>'
+            +'</tr>';
+        }).join('')}
+        </tbody></table></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 class="fw6 mb12" style="font-size:14px">Detalle de movimientos <span class="badge badge-blue" style="margin-left:8px">${movs.length}</span></h3>
+      ${movs.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Descripción</th><th>N°</th><th>Forma pago</th><th class="td-r">Ingreso</th><th class="td-r">Egreso</th></tr></thead>
+      <tbody>${movRows}</tbody></table></div>`
+      :`<p class="text-muted" style="font-size:13px">Sin movimientos en el período</p>`}
+    </div>`;
+}
+
 // ═══════════════════════════════════════════════════════════
-// CUENTA CORRIENTE CLIENTES (dentro de ventas)
+// MÓDULO CUENTAS CORRIENTES CLIENTES
 // ═══════════════════════════════════════════════════════════
+var _ccQ='';
+async function renderCCClientes(){
+  const eid=_empresa.id;
+  const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
+  const fvsAll=await DB.getE(eid,'facturas_venta');
+  const recsAll=await DB.getE(eid,'recibos_cobro');
+  const ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');
+
+  // Calcular saldo por cliente
+  var clientesCC=clientes.filter(function(cl){
+    var tieneMovs=fvsAll.some(f=>f.clienteId===cl.id&&f.tipo==='cc')
+      ||recsAll.some(r=>r.clienteId===cl.id);
+    return cl.condicionCobro==='cc'||tieneMovs;
+  });
+  if(_ccQ){
+    var q=_ccQ.toLowerCase();
+    clientesCC=clientesCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));
+  }
+
+  var rows=clientesCC.map(function(cl){
+    var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
+    var recs=recsAll.filter(r=>r.clienteId===cl.id);
+    var ncs=ncsAll.filter(n=>n.clienteId===cl.id);
+    var debito=fvs.reduce(function(s,f){return s+f.total;},0);
+    var credito=recs.reduce(function(s,r){return s+r.importe;},0)+ncs.reduce(function(s,n){return s+n.importe;},0);
+    var saldo=debito-credito;
+    var saldoCls=saldo>0?'color:var(--red)':saldo<0?'color:var(--green)':'color:var(--text2)';
+    var cid=cl.id;
+    return '<tr>'
+      +'<td><strong>'+esc(cl.nombre)+'</strong>'+(cl.cuit?'<br><span style="font-size:11px;color:var(--text2)">'+esc(cl.cuit)+'</span>':'')+'</td>'
+      +'<td class="td-mono">'+fmtARS(debito)+'</td>'
+      +'<td class="td-mono">'+fmtARS(credito)+'</td>'
+      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(saldo)+'</td>'
+      +'<td><div class="td-act">'
+      +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente('+JSON.stringify(cid)+')">Ver cuenta</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente('+JSON.stringify(cid)+')" title="Nota de crédito">📝</button>'
+      +'</div></td>'
+      +'</tr>';
+  }).join('');
+
+  var totalSaldo=clientesCC.reduce(function(s,cl){
+    var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
+    var recs=recsAll.filter(r=>r.clienteId===cl.id);
+    var ncs=ncsAll.filter(n=>n.clienteId===cl.id);
+    var d=fvs.reduce(function(a,f){return a+f.total;},0);
+    var cr=recs.reduce(function(a,r){return a+r.importe;},0)+ncs.reduce(function(a,n){return a+n.importe;},0);
+    return s+(d-cr);
+  },0);
+
+  document.getElementById('main-content').innerHTML=`
+    <div class="g3 mb20">
+      <div class="stat-card"><div class="stat-lbl">Clientes en CC</div><div class="stat-val" style="color:var(--accent)">${clientesCC.length}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Saldo total a cobrar</div><div class="stat-val" style="color:${totalSaldo>=0?'var(--red)':'var(--green)'}">${fmtARS(Math.abs(totalSaldo))}</div></div>
+    </div>
+    <div class="toolbar">
+      <div class="toolbar-l"><div class="sw"><span class="si">🔍</span><input value="${esc(_ccQ)}" placeholder="Buscar cliente..." oninput="_ccQ=this.value;renderCCClientes()" style="width:240px;padding-left:32px"></div></div>
+    </div>
+    ${clientesCC.length?`<div class="tw"><table><thead><tr><th>Cliente</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th><th></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`
+    :`<div class="empty"><div class="ei">📒</div><h3>Sin cuentas corrientes</h3><p>Los clientes con condición CC aparecerán aquí</p></div>`}`;
+}
+
 async function verCCCliente(clienteId){
   const eid=_empresa.id;
   const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===clienteId);if(!cl)return;
   const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
   const recs=(await DB.getE(eid,'recibos_cobro')).filter(r=>r.clienteId===clienteId);
+  const ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');
   const movs=[
     ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
     ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
+    ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota crédito',numero:n.numero,debito:0,credito:n.importe})),
   ].sort((a,b)=>a.fecha>b.fecha?1:-1);
   let saldo=0;
-  const rows=movs.map(m=>{saldo+=m.debito-m.credito;return{...m,saldo}});
-  openModal(`CC · ${cl.nombre}`,`
+  const rows=movs.map(m=>{saldo+=m.debito-m.credito;return Object.assign({},m,{saldo:saldo});});
+  var cid=clienteId;
+  openModal('CC · '+esc(cl.nombre),`
+    <div style="text-align:right;margin-bottom:12px">
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();abrirNotaCreditoCliente(${JSON.stringify(cid)})">📝 Nota de crédito</button>
+    </div>
     <div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th></tr></thead>
-    <tbody>${rows.map(r=>`<tr>
-      <td>${esc(r.fecha)}</td><td>${esc(r.tipo)}</td><td class="td-mono">${esc(r.numero)}</td>
-      <td class="td-mono td-r" style="color:var(--red)">${r.debito?fmtARS(r.debito):'—'}</td>
-      <td class="td-mono td-r" style="color:var(--green)">${r.credito?fmtARS(r.credito):'—'}</td>
-      <td class="td-mono td-r" style="font-weight:600;color:${r.saldo>0?'var(--red)':r.saldo<0?'var(--green)':'var(--text)'}">${fmtARS(r.saldo)}</td>
-    </tr>`).join('')}
+    <tbody>`+rows.map(function(r){
+      return '<tr>'
+        +'<td>'+esc(r.fecha)+'</td><td>'+esc(r.tipo)+'</td><td class="td-mono">'+esc(r.numero)+'</td>'
+        +'<td class="td-mono td-r" style="color:var(--red)">'+(r.debito?fmtARS(r.debito):'—')+'</td>'
+        +'<td class="td-mono td-r" style="color:var(--green)">'+(r.credito?fmtARS(r.credito):'—')+'</td>'
+        +'<td class="td-mono td-r" style="font-weight:600;color:'+(r.saldo>0?'var(--red)':r.saldo<0?'var(--green)':'var(--text)')+'">'+fmtARS(r.saldo)+'</td>'
+        +'</tr>';
+    }).join('')+`
     </tbody></table></div>
     <div style="text-align:right;margin-top:12px;font-size:14px;font-weight:600">Saldo actual: <span style="font-family:var(--mono);color:${saldo>0?'var(--red)':saldo<0?'var(--green)':'var(--text)'}">${fmtARS(saldo)}</span></div>
   `,[{lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'}],true);
+}
+
+// ═══════════════════════════════════════════════════════════
+// NOTAS DE CRÉDITO
+// ═══════════════════════════════════════════════════════════
+async function abrirNotaCreditoCliente(clienteId){
+  const eid=_empresa.id;
+  const clientes=await DB.getE(eid,'clientes');
+  const cl=clienteId?clientes.find(x=>x.id===clienteId):null;
+  const fvs=clienteId?(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc'):[];
+  var clOpts=clientes.filter(x=>x.activo).map(function(c){return '<option value="'+c.id+'"'+(clienteId===c.id?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
+  var facOpts='<option value="">Sin factura asociada</option>'+fvs.map(function(f){return '<option value="'+f.id+'">'+esc(f.numero)+' · '+fmtARS(f.total)+'</option>';}).join('');
+  openModal('Nota de crédito a cliente',`
+    <div class="fg"><label>Cliente *</label><select id="nc-cl">${clOpts}</select></div>
+    <div class="fg"><label>Factura asociada</label><select id="nc-fac">${facOpts}</select></div>
+    <div class="row2">
+      <div class="fg"><label>Fecha *</label><input id="nc-f" type="date" value="${today()}"></div>
+      <div class="fg"><label>Importe *</label><input id="nc-imp" type="number" step="0.01" placeholder="0.00"></div>
+    </div>
+    <div class="fg"><label>Concepto *</label><input id="nc-desc" placeholder="Ej: Devolución mercadería"></div>
+    <div class="fg"><label>Observaciones</label><textarea id="nc-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Emitir nota de crédito',cls:'btn-primary',fn:'saveNotaCreditoCliente()'}]);
+}
+async function saveNotaCreditoCliente(){
+  const eid=_empresa.id;
+  const clId=document.getElementById('nc-cl').value;
+  if(!clId){toast('Seleccioná un cliente','error');return}
+  const importe=parseFloat(document.getElementById('nc-imp').value)||0;
+  if(!importe){toast('El importe es obligatorio','error');return}
+  const desc=document.getElementById('nc-desc').value.trim();
+  if(!desc){toast('El concepto es obligatorio','error');return}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{NCV:1};
+  if(!nums.NCV)nums.NCV=1;
+  const numero='NCV-'+String(nums.NCV).padStart(5,'0');nums.NCV++;
+  await DB.setCfg(eid,{nums});
+  const nc={id:genId(),numero,tipo:'venta',fecha:document.getElementById('nc-f').value,
+    clienteId:clId,facturaId:document.getElementById('nc-fac').value||null,
+    importe,descripcion:desc,
+    observaciones:document.getElementById('nc-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Emitiendo nota de crédito...');
+  await DB.upsertItem(eid,'notas_credito',nc);
+  hideLoading();
+  closeModal();toast('Nota de crédito emitida · '+numero,'success');
+  if(_section==='cc-clientes')renderCCClientes();
+  else if(_section==='ventas')renderVentas();
+}
+
+async function abrirNotaCreditoProveedor(proveedorId){
+  const eid=_empresa.id;
+  const provs=await DB.getE(eid,'proveedores');
+  const fcs=proveedorId?(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===proveedorId&&f.tipo==='cc'):[];
+  var pvOpts=provs.filter(x=>x.activo).map(function(p){return '<option value="'+p.id+'"'+(proveedorId===p.id?' selected':'')+'>'+esc(p.nombre)+'</option>';}).join('');
+  var facOpts='<option value="">Sin factura asociada</option>'+fcs.map(function(f){return '<option value="'+f.id+'">'+esc(f.numero)+' · '+fmtARS(f.total)+'</option>';}).join('');
+  openModal('Nota de crédito de proveedor',`
+    <div class="fg"><label>Proveedor *</label><select id="ncp-pv">${pvOpts}</select></div>
+    <div class="fg"><label>Factura asociada</label><select id="ncp-fac">${facOpts}</select></div>
+    <div class="row2">
+      <div class="fg"><label>Fecha *</label><input id="ncp-f" type="date" value="${today()}"></div>
+      <div class="fg"><label>Importe *</label><input id="ncp-imp" type="number" step="0.01" placeholder="0.00"></div>
+    </div>
+    <div class="fg"><label>Concepto *</label><input id="ncp-desc" placeholder="Ej: Descuento por devolución"></div>
+    <div class="fg"><label>Observaciones</label><textarea id="ncp-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar nota de crédito',cls:'btn-primary',fn:'saveNotaCreditoProveedor()'}]);
+}
+async function saveNotaCreditoProveedor(){
+  const eid=_empresa.id;
+  const pvId=document.getElementById('ncp-pv').value;
+  if(!pvId){toast('Seleccioná un proveedor','error');return}
+  const importe=parseFloat(document.getElementById('ncp-imp').value)||0;
+  if(!importe){toast('El importe es obligatorio','error');return}
+  const desc=document.getElementById('ncp-desc').value.trim();
+  if(!desc){toast('El concepto es obligatorio','error');return}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{NCP:1};
+  if(!nums.NCP)nums.NCP=1;
+  const numero='NCP-'+String(nums.NCP).padStart(5,'0');nums.NCP++;
+  await DB.setCfg(eid,{nums});
+  const nc={id:genId(),numero,tipo:'compra',fecha:document.getElementById('ncp-f').value,
+    proveedorId:pvId,facturaId:document.getElementById('ncp-fac').value||null,
+    importe,descripcion:desc,
+    observaciones:document.getElementById('ncp-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando nota de crédito...');
+  await DB.upsertItem(eid,'notas_credito',nc);
+  hideLoading();
+  closeModal();toast('Nota de crédito registrada · '+numero,'success');
+  if(_section==='compras')renderCompras();
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2282,9 +2685,12 @@ async function verCCCliente(clienteId){
 async function toggleItem(key,id,cb,isUsers){
   const eid=_empresa.id;
   const tbl=isUsers?'usuarios':key;
-  let items=await DB.getE(eid,tbl);
-  items=items.map(x=>x.id===id?{...x,activo:!x.activo}:x);
-  await DB.setE(eid,tbl,items);
+  const items=await DB.getE(eid,tbl);
+  const item=items.find(x=>x.id===id);
+  if(!item)return;
+  const nuevoActivo=!item.activo;
+  await DB.patchItem(eid,tbl,id,{activo:nuevoActivo});
+  DB._clearCache(eid,tbl);
   if(typeof cb==='function')await cb();
 }
 async function delItem(key,id,cb){
