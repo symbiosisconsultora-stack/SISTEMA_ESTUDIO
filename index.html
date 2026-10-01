@@ -918,6 +918,32 @@ async function renderClientes(){
   const items=await DB.getE(eid,'clientes');
   const f=_clQ?items.filter(x=>x.nombre.toLowerCase().includes(_clQ.toLowerCase())||(x.cuit||'').includes(_clQ)):items;
   const c=document.getElementById('main-content');
+  const rows=f.map(function(cl){
+    var emailHtml=cl.email?'<br><span style="font-size:11px;color:var(--text2)">'+esc(cl.email)+'</span>':'';
+    var cobBadge=cl.condicionCobro==='cc'?'badge-yellow':'badge-blue';
+    var cobLbl=cl.condicionCobro==='cc'?'Cta. Cte.':'Contado';
+    var dotCls=cl.activo?'son':'soff';
+    var estadoLbl=cl.activo?'Activo':'Inactivo';
+    var lockIcon=cl.activo?'🔒':'🔓';
+    var toggleTitle=cl.activo?'Desactivar':'Activar';
+    var id=cl.id;
+    return '<tr>'
+      +'<td class="td-mono">'+esc(cl.codigo)+'</td>'
+      +'<td><strong>'+esc(cl.nombre)+'</strong>'+emailHtml+'</td>'
+      +'<td>'+esc(cl.cuit||'—')+'</td><td>'+esc(cl.condicionIva||'—')+'</td>'
+      +'<td><span class="badge '+cobBadge+'">'+cobLbl+'</span></td>'
+      +'<td><span class="sdot '+dotCls+'"></span>'+estadoLbl+'</td>'
+      +'<td><div class="td-act">'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openClienteModal('+JSON.stringify(id)+')" title="Editar">✏️</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('+JSON.stringify('clientes')+','+JSON.stringify(id)+',renderClientes)" title="'+toggleTitle+'">'+lockIcon+'</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('+JSON.stringify('clientes')+','+JSON.stringify(id)+',renderClientes)" title="Eliminar">🗑️</button>'
+      +'</div></td>'
+      +'</tr>';
+  }).join('');
+  const tableHtml=f.length
+    ?'<div class="tw"><table><thead><tr><th>Código</th><th>Razón Social</th><th>CUIT</th><th>Cond. IVA</th><th>Cobro</th><th>Estado</th><th></th></tr></thead><tbody>'+rows+'</tbody></table></div>'
+     +'<p class="text-muted" style="font-size:12px;margin-top:10px">'+f.length+' cliente'+(f.length!==1?'s':'')+'</p>'
+    :'<div class="empty"><div class="ei">👥</div><h3>Sin clientes</h3><p>Creá el primer cliente</p></div>';
   c.innerHTML=`
     <div class="toolbar">
       <div class="toolbar-l">
@@ -927,22 +953,7 @@ async function renderClientes(){
       <button class="btn btn-secondary btn-sm" onclick="actualizarAbonosGlobal()">📈 Actualizar abonos</button>
       <button class="btn btn-primary btn-sm" onclick="openClienteModal()">+ Nuevo cliente</button>
     </div>
-    ${f.length?`<div class="tw"><table><thead><tr><th>Código</th><th>Razón Social</th><th>CUIT</th><th>Cond. IVA</th><th>Cobro</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${f.map(cl=>`<tr>
-      <td class="td-mono">${esc(cl.codigo)}</td>
-      <td><strong>${esc(cl.nombre)}</strong>${cl.email?`<br><span style="font-size:11px;color:var(--text2)">${esc(cl.email)}</span>`:''}</td>
-      <td>${esc(cl.cuit||'—')}</td><td>${esc(cl.condicionIva||'—')}</td>
-      <td><span class="badge ${cl.condicionCobro==='cc'?'badge-yellow':'badge-blue'}">${cl.condicionCobro==='cc'?'Cta. Cte.':'Contado'}</span></td>
-      <td><span class="sdot ${cl.activo?'son':'soff'}"></span>${cl.activo?'Activo':'Inactivo'}</td>
-      <td><div class="td-act">
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="openClienteModal('${cl.id}')" title="Editar">✏️</button>
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('clientes','${cl.id}',renderClientes)" title="${cl.activo?'Desactivar':'Activar'}">${cl.activo?'🔒':'🔓'}</button>
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('clientes','${cl.id}',renderClientes)" title="Eliminar">🗑️</button>
-      </div></td>
-    </tr>`;}).join('')}
-    </tbody></table></div>
-    <p class="text-muted" style="font-size:12px;margin-top:10px">${f.length} cliente${f.length!==1?'s':''}</p>`
-    :`<div class="empty"><div class="ei">👥</div><h3>Sin clientes</h3><p>Creá el primer cliente</p></div>`}`;
+    ${tableHtml}`;
 }
 
 const IVA_OPTS=['Resp. Inscripto','Monotributista','Consumidor Final','Exento'];
@@ -1386,16 +1397,22 @@ async function renderUsuarios(){
   document.getElementById('main-content').innerHTML=`
     <div class="toolbar"><div style="flex:1"></div><button class="btn btn-primary btn-sm" onclick="openUsuarioModal()">+ Nuevo usuario</button></div>
     <div class="tw"><table><thead><tr><th>Nombre</th><th>Usuario</th><th>Rol</th><th>Empresas</th><th>Estado</th><th></th></tr></thead><tbody>
-    ${items.map(u=>{const empIds=Array.isArray(u.empresasIds)?u.empresasIds:(u.empresaId?[u.empresaId]:[]);return`<tr>
-      <td>${esc(u.nombre)}</td><td class="td-mono">${esc(u.usuario)}</td>
-      <td><span class="badge ${u.rol==='admin'?'badge-blue':u.rol==='operador'?'badge-green':'badge-gray'}">${ROLES[u.rol]||u.rol}</span></td>
-      <td style="font-size:12px">${empIds.length>1?`<span class="badge badge-blue">${empIds.length} empresas</span>`:'Esta empresa'}</td>
-      <td><span class="sdot ${u.activo?'son':'soff'}"></span>${u.activo?'Activo':'Inactivo'}</td>
-      <td><div class="td-act">
-        <button class="btn btn-ghost btn-sm btn-icon" onclick="openUsuarioModal('${u.id}')">✏️</button>
-        ${u.id!==_user.id?`<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('usuarios','${u.id}',renderUsuarios,true)">${u.activo?'🔒':'🔓'}</button>`:''}
-      </div></td>
-    </tr>`).join('')}
+    ${items.map(function(u){
+      var empIds=Array.isArray(u.empresasIds)?u.empresasIds:(u.empresaId?[u.empresaId]:[]);
+      var rolBadge=u.rol==='admin'?'badge-blue':u.rol==='operador'?'badge-green':'badge-gray';
+      var empCell=empIds.length>1?'<span class="badge badge-blue">'+empIds.length+' empresas</span>':'Esta empresa';
+      var dotCls=u.activo?'son':'soff';
+      var estadoLbl=u.activo?'Activo':'Inactivo';
+      var lockBtn=u.id!==_user.id?'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('+JSON.stringify('usuarios')+','+JSON.stringify(u.id)+',renderUsuarios,true)">'+(u.activo?'🔒':'🔓')+'</button>':'';
+      return '<tr>'
+        +'<td>'+esc(u.nombre)+'</td><td class="td-mono">'+esc(u.usuario)+'</td>'
+        +'<td><span class="badge '+rolBadge+'">'+( ROLES[u.rol]||u.rol)+'</span></td>'
+        +'<td style="font-size:12px">'+empCell+'</td>'
+        +'<td><span class="sdot '+dotCls+'"></span>'+estadoLbl+'</td>'
+        +'<td><div class="td-act">'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openUsuarioModal('+JSON.stringify(u.id)+')">✏️</button>'
+        +lockBtn+'</div></td></tr>';
+    }).join('')}
     </tbody></table></div>
     <p style="font-size:12px;color:var(--text2);margin-top:10px">Contraseña por defecto para nuevos usuarios: <strong>admin</strong></p>`;
 }
