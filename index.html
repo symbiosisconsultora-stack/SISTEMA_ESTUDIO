@@ -460,24 +460,28 @@ const DB = {
     const row = toDB('empresas', obj);
     delete row.empresa_id;
     try {
-      await fetch(`${SB_URL}/rest/v1/empresas`, {
+      const r = await fetch(`${SB_URL}/rest/v1/empresas`, {
         method: 'POST',
         headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=representation' }),
         body: JSON.stringify(row)
       });
-    } catch(e) { console.error('saveEmpresa', e); }
+      if(!r.ok){ const e=await r.text().catch(()=>''); console.error('saveEmpresa HTTP',r.status,e); toast('Error al crear empresa ('+r.status+'): '+e.slice(0,200),'error'); return false; }
+      return true;
+    } catch(e) { console.error('saveEmpresa', e); toast('Error de conexión al crear empresa','error'); return false; }
   },
 
   async updateEmpresa(obj) {
     const row = toDB('empresas', obj);
     delete row.empresa_id;
     try {
-      await fetch(`${SB_URL}/rest/v1/empresas?id=eq.${obj.id}`, {
+      const r = await fetch(`${SB_URL}/rest/v1/empresas?id=eq.${obj.id}`, {
         method: 'PATCH',
-        headers: sbHeaders(),
+        headers: sbHeaders({ 'Prefer': 'return=minimal' }),
         body: JSON.stringify(row)
       });
-    } catch(e) { console.error('updateEmpresa', e); }
+      if(!r.ok){ const e=await r.text().catch(()=>''); console.error('updateEmpresa HTTP',r.status,e); toast('Error al guardar empresa ('+r.status+'): '+e.slice(0,200),'error'); return false; }
+      return true;
+    } catch(e) { console.error('updateEmpresa', e); toast('Error de conexión al guardar empresa','error'); return false; }
   },
 
   async deleteEmpresa(id) {
@@ -1612,16 +1616,31 @@ function clearLogo(){
 async function saveEmpresaConfig(){
   const nombre=document.getElementById('ec-n').value.trim();
   if(!nombre){toast('Nombre obligatorio','error');return}
+  const logoData=document.getElementById('ec-logo-data').value||_empresa.logo||'';
   const upd={..._empresa,nombre,cuit:document.getElementById('ec-cuit').value.trim(),
     direccion:document.getElementById('ec-dir').value.trim(),email:document.getElementById('ec-email').value.trim(),
     telefono:document.getElementById('ec-tel').value.trim(),color:document.getElementById('ec-color').value,
-    logo:document.getElementById('ec-logo-data').value||_empresa.logo||''};
+    logo:logoData};
   showLoading('Guardando...');
-  await DB.updateEmpresa(upd);
+  const ok=await DB.updateEmpresa(upd);
   hideLoading();
+  if(!ok)return;  // el toast de error ya fue mostrado por updateEmpresa
   _empresa=upd;
   document.getElementById('sb-dot').style.background=upd.color;
   document.getElementById('sb-ename').textContent=upd.nombre;
+  // Actualizar logo en sidebar si cambió
+  const sbLogoWrap=document.getElementById('sb-logo-wrap');
+  const sbLogoInner=document.getElementById('sb-logo-inner');
+  const sbBrandName=document.getElementById('sb-brand-name');
+  if(upd.logo){
+    sbLogoWrap.style.cssText='width:auto;height:48px;background:none;border-radius:0;padding:0;flex-shrink:0';
+    sbLogoInner.innerHTML='<img src="'+upd.logo+'" style="height:48px;max-width:140px;object-fit:contain">';
+    sbBrandName.textContent=upd.nombre;
+  } else {
+    sbLogoWrap.style.cssText='';
+    sbLogoInner.textContent='📊';
+    sbBrandName.textContent='SistemaGestión';
+  }
   toast('Configuración guardada','success');
 }
 async function saveNums(){
