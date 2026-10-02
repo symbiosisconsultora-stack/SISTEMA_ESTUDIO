@@ -34,7 +34,7 @@ input,select,textarea,button{font-family:var(--font);font-size:14px}
 /* ══════════ EMPRESA SELECTOR ══════════ */
 #screen-empresas{flex-direction:column;align-items:center;justify-content:center;padding:40px 20px}
 .brand{text-align:center;margin-bottom:40px}
-.brand-logo{width:80px;height:80px;background:var(--accent);border-radius:18px;display:inline-flex;align-items:center;justify-content:center;font-size:36px;color:#fff;margin-bottom:14px;box-shadow:0 4px 16px rgba(37,99,235,.25)}
+.brand-logo{width:104px;height:104px;background:var(--accent);border-radius:22px;display:inline-flex;align-items:center;justify-content:center;font-size:47px;color:#fff;margin-bottom:14px;box-shadow:0 4px 16px rgba(37,99,235,.25)}
 .brand h1{font-size:24px;font-weight:600;letter-spacing:-.3px}
 .brand p{color:var(--text2);font-size:13px;margin-top:4px}
 .empresas-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;width:100%;max-width:760px}
@@ -260,7 +260,7 @@ td{padding:9px 13px;font-size:13px}
     <button class="btn btn-secondary btn-sm mb16" onclick="showScreen('empresas')" style="display:block;margin-bottom:20px">← Cambiar empresa</button>
     <div class="login-box">
       <div id="lt-logo-wrap" style="text-align:center;margin-bottom:14px;display:none">
-        <img id="lt-logo" src="" style="height:80px;max-width:240px;object-fit:contain">
+        <img id="lt-logo" src="" style="height:104px;max-width:312px;object-fit:contain">
       </div>
       <div class="e-tag">
         <span id="lt-dot" style="width:8px;height:8px;border-radius:50%;display:inline-block"></span>
@@ -729,7 +729,7 @@ async function renderEmpresasScreen(){
     const list=await DB.getEmpresas();
     g.innerHTML=list.map(e=>`
       <div class="e-card" onclick="selectEmpresa('${e.id}')">
-        ${e.logo?`<img src="${e.logo}" style="height:72px;max-width:180px;object-fit:contain;margin-bottom:8px">`:`<div class="e-dot" style="background:${e.color||'#2563eb'}"></div>`}
+        ${e.logo?`<img src="${e.logo}" style="height:94px;max-width:234px;object-fit:contain;margin-bottom:8px">`:`<div class="e-dot" style="background:${e.color||'#2563eb'}"></div>`}
         <h3>${esc(e.nombre)}</h3>
         <p>${esc(e.cuit||'Sin CUIT')}</p>
       </div>
@@ -842,8 +842,8 @@ function loadApp(){
   const sbLogoInner=document.getElementById('sb-logo-inner');
   const sbBrandName=document.getElementById('sb-brand-name');
   if(_empresa.logo){
-    sbLogoWrap.style.cssText='width:auto;height:48px;background:none;border-radius:0;padding:0;flex-shrink:0';
-    sbLogoInner.innerHTML='<img src="'+_empresa.logo+'" style="height:48px;max-width:140px;object-fit:contain">';
+    sbLogoWrap.style.cssText='width:auto;height:62px;background:none;border-radius:0;padding:0;flex-shrink:0';
+    sbLogoInner.innerHTML='<img src="'+_empresa.logo+'" style="height:62px;max-width:182px;object-fit:contain">';
     sbBrandName.textContent=_empresa.nombre;
   } else {
     sbLogoWrap.style.cssText='';
@@ -987,6 +987,7 @@ async function renderClientes(){
     var lockIcon=cl.activo?'🔒':'🔓';
     var toggleTitle=cl.activo?'Desactivar':'Activar';
     var id=cl.id;
+    var ccBtn=cl.condicionCobro==='cc'?'<button class="btn btn-ghost btn-sm btn-icon" onclick="verCCCliente(\''+id+'\')" title="Ver cuenta corriente">📒</button>':'';
     return '<tr>'
       +'<td class="td-mono">'+esc(cl.codigo)+'</td>'
       +'<td><strong>'+esc(cl.nombre)+'</strong>'+emailHtml+'</td>'
@@ -994,9 +995,10 @@ async function renderClientes(){
       +'<td><span class="badge '+cobBadge+'">'+cobLbl+'</span></td>'
       +'<td><span class="sdot '+dotCls+'"></span>'+estadoLbl+'</td>'
       +'<td><div class="td-act">'
-      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openClienteModal('+JSON.stringify(id)+')" title="Editar">✏️</button>'
-      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('+JSON.stringify('clientes')+','+JSON.stringify(id)+',renderClientes)" title="'+toggleTitle+'">'+lockIcon+'</button>'
-      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('+JSON.stringify('clientes')+','+JSON.stringify(id)+',renderClientes)" title="Eliminar">🗑️</button>'
+      +ccBtn
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openClienteModal(\''+id+'\')" title="Editar">✏️</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem(\'clientes\',\''+id+'\',renderClientes)" title="'+toggleTitle+'">'+lockIcon+'</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem(\'clientes\',\''+id+'\',renderClientes)" title="Eliminar">🗑️</button>'
       +'</div></td>'
       +'</tr>';
   }).join('');
@@ -1089,8 +1091,9 @@ async function saveCliente(id){
     precio:parseFloat(r.querySelector('.ab-prec').value)||0
   })).filter(a=>a.descripcion);
   showLoading('Guardando...');
-  await DB.upsertItem(eid,'clientes',obj);
+  const ok=await DB.upsertItem(eid,'clientes',obj);
   hideLoading();
+  if(!ok)return;
   closeModal();toast(id?'Cliente actualizado':'Cliente creado','success');renderClientes();
 }
 
@@ -1330,8 +1333,8 @@ async function renderRubros(tipo){
         +'<td>'+esc(r.nombre)+'</td>'
         +'<td><span class="sdot '+(r.activo?'son':'soff')+'"></span>'+(r.activo?'Activo':'Inactivo')+'</td>'
         +'<td><div class="td-act">'
-        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openRubroModal('+JSON.stringify(rid)+','+JSON.stringify(rtipo)+')">✏️</button>'
-        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem('+JSON.stringify('rubros')+','+JSON.stringify(rid)+',function(){renderRubros('+JSON.stringify(rtipo)+')})">🗑️</button>'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openRubroModal(\''+rid+'\',\''+rtipo+'\')">✏️</button>'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="delItem(\'rubros\',\''+rid+'\',function(){renderRubros(\''+rtipo+'\')})">🗑️</button>'
         +'</div></td>'
         +'</tr>';
     }).join('')+`
@@ -1351,7 +1354,7 @@ async function openRubroModal(id,tipo){
       <option value="ambos"${v.tipo==='ambos'?' selected':''}>Ambos</option>
     </select></div>
     <div class="fg"><label>Estado</label><select id="rb-act"><option value="1"${v.activo?' selected':''}>Activo</option><option value="0"${!v.activo?' selected':''}>Inactivo</option></select></div>
-  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:'saveRubro('+JSON.stringify(id||'')+')'}]);
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:'saveRubro(\''+( id||'')+'\')'}]);
   setTimeout(()=>document.getElementById('rb-n').focus(),50);
 }
 async function saveRubro(id){
@@ -1478,14 +1481,14 @@ async function renderUsuarios(){
       var empCell=empIds.length>1?'<span class="badge badge-blue">'+empIds.length+' empresas</span>':'Esta empresa';
       var dotCls=u.activo?'son':'soff';
       var estadoLbl=u.activo?'Activo':'Inactivo';
-      var lockBtn=u.id!==_user.id?'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem('+JSON.stringify('usuarios')+','+JSON.stringify(u.id)+',renderUsuarios,true)">'+(u.activo?'🔒':'🔓')+'</button>':'';
+      var lockBtn=u.id!==_user.id?'<button class="btn btn-ghost btn-sm btn-icon" onclick="toggleItem(\'usuarios\',\''+u.id+'\',renderUsuarios,true)">'+(u.activo?'🔒':'🔓')+'</button>':'';
       return '<tr>'
         +'<td>'+esc(u.nombre)+'</td><td class="td-mono">'+esc(u.usuario)+'</td>'
         +'<td><span class="badge '+rolBadge+'">'+( ROLES[u.rol]||u.rol)+'</span></td>'
         +'<td style="font-size:12px">'+empCell+'</td>'
         +'<td><span class="sdot '+dotCls+'"></span>'+estadoLbl+'</td>'
         +'<td><div class="td-act">'
-        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openUsuarioModal('+JSON.stringify(u.id)+')">✏️</button>'
+        +'<button class="btn btn-ghost btn-sm btn-icon" onclick="openUsuarioModal(\''+u.id+'\')">✏️</button>'
         +lockBtn+'</div></td></tr>';
     }).join('')}
     </tbody></table></div>
@@ -1633,8 +1636,8 @@ async function saveEmpresaConfig(){
   const sbLogoInner=document.getElementById('sb-logo-inner');
   const sbBrandName=document.getElementById('sb-brand-name');
   if(upd.logo){
-    sbLogoWrap.style.cssText='width:auto;height:48px;background:none;border-radius:0;padding:0;flex-shrink:0';
-    sbLogoInner.innerHTML='<img src="'+upd.logo+'" style="height:48px;max-width:140px;object-fit:contain">';
+    sbLogoWrap.style.cssText='width:auto;height:62px;background:none;border-radius:0;padding:0;flex-shrink:0';
+    sbLogoInner.innerHTML='<img src="'+upd.logo+'" style="height:62px;max-width:182px;object-fit:contain">';
     sbBrandName.textContent=upd.nombre;
   } else {
     sbLogoWrap.style.cssText='';
@@ -1821,7 +1824,7 @@ async function verFV(id){
         <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px">${esc(_empresa.nombre||'')}</div>
         ${_empresa.cuit?`<div style="font-size:11px;color:var(--text2)">CUIT: ${esc(_empresa.cuit)}</div>`:''}
       </div>
-      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:70px;max-width:200px;object-fit:contain">`:''}
+      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:91px;max-width:260px;object-fit:contain">`:''}
     </div>
     <div class="detail-grid">
       <div><div class="dl">Cliente</div><div class="dv">${cl?esc(cl.nombre):'—'}</div></div>
@@ -2114,7 +2117,7 @@ async function verFC(id){
         <div style="font-size:11px;color:var(--text2);text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px">${esc(_empresa.nombre||'')}</div>
         ${_empresa.cuit?`<div style="font-size:11px;color:var(--text2)">CUIT: ${esc(_empresa.cuit)}</div>`:''}
       </div>
-      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:70px;max-width:200px;object-fit:contain">`:''}
+      ${_empresa.logo?`<img src="${_empresa.logo}" style="height:91px;max-width:260px;object-fit:contain">`:''}
     </div>
     <div class="detail-grid">
       <div><div class="dl">Proveedor</div><div class="dv">${pv?esc(pv.nombre):'—'}</div></div>
@@ -2608,8 +2611,8 @@ async function renderCCClientes(){
       +'<td class="td-mono">'+fmtARS(credito)+'</td>'
       +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(saldo)+'</td>'
       +'<td><div class="td-act">'
-      +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente('+JSON.stringify(cid)+')">Ver cuenta</button>'
-      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente('+JSON.stringify(cid)+')" title="Nota de crédito">📝</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente(\''+cid+'\')">Ver cuenta</button>'
+      +'<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente(\''+cid+'\')" title="Nota de crédito">📝</button>'
       +'</div></td>'
       +'</tr>';
   }).join('');
@@ -2786,7 +2789,7 @@ function _logoHtml(h){
   return '<img src="'+_empresa.logo+'" style="height:'+h+'px;max-width:160px;object-fit:contain">';
 }
 function _empresaHeader(){
-  var logoH=_empresa&&_empresa.logo?'<img src="'+_empresa.logo+'" style="height:90px;max-width:260px;object-fit:contain;display:block;margin-bottom:6px">':'';
+  var logoH=_empresa&&_empresa.logo?'<img src="'+_empresa.logo+'" style="height:117px;max-width:338px;object-fit:contain;display:block;margin-bottom:6px">':'';
   var nombre=_empresa?esc(_empresa.nombre||''):'';
   var cuit=_empresa&&_empresa.cuit?'CUIT: '+esc(_empresa.cuit):'';
   var dir=_empresa&&_empresa.direccion?esc(_empresa.direccion):'';
