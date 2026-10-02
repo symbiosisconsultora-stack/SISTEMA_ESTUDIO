@@ -2415,10 +2415,10 @@ async function renderTesoreria(){
   const fcPend=(await DB.getE(eid,'facturas_compra')).filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
 
   var bancosOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(_tesBanco===b.id?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
+  const cajasAll=await DB.getE(eid,'cajas');
   var cajasOpts=cajasAll.filter(x=>x.activo).map(function(c){return '<option value="'+c.id+'"'+(_tesCaja===c.id?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
   var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(_tesFP===fp.id?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
 
-  const cajasAll=await DB.getE(eid,'cajas');
   var movRows=movsFilt.map(function(m){
     var fp=fps.find(x=>x.id===m.fpId);
     var bk=bancos.find(x=>x.id===m.bancoId);
@@ -3010,6 +3010,8 @@ async function renderInformeFinanciero(c,filtros){
 // MÓDULO CUENTAS CORRIENTES CLIENTES
 // ═══════════════════════════════════════════════════════════
 var _ccQ='';
+var _ccDesde='',_ccHasta='';
+var _ccSoloDeudor=false,_ccSoloAcreedor=false,_ccOcultarSinSaldo=false,_ccOcultarSinMovs=false;
 async function renderCCClientes(){
   const eid=_empresa.id;
   const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
@@ -3017,7 +3019,7 @@ async function renderCCClientes(){
   const recsAll=await DB.getE(eid,'recibos_cobro');
   var ncsAll=[];try{ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');}catch(e){}
 
-  // Calcular saldo por cliente
+  // Calcular datos por cliente
   var clientesCC=clientes.filter(function(cl){
     var tieneMovs=fvsAll.some(f=>f.clienteId===cl.id&&f.tipo==='cc')
       ||recsAll.some(r=>r.clienteId===cl.id);
@@ -3028,45 +3030,90 @@ async function renderCCClientes(){
     clientesCC=clientesCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));
   }
 
-  var rows=clientesCC.map(function(cl){
+  // Calcular saldos (con filtro de fechas si hay)
+  function calcCC(cl){
     var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
     var recs=recsAll.filter(r=>r.clienteId===cl.id);
     var ncs=ncsAll.filter(n=>n.clienteId===cl.id);
-    var debito=fvs.reduce(function(s,f){return s+f.total;},0);
-    var credito=recs.reduce(function(s,r){return s+r.importe;},0)+ncs.reduce(function(s,n){return s+n.importe;},0);
-    var saldo=debito-credito;
-    var saldoCls=saldo>0?'color:var(--red)':saldo<0?'color:var(--green)':'color:var(--text2)';
+    // saldo previo
+    var saldoPrevio=0;
+    if(_ccDesde){
+      fvs.filter(f=>f.fecha<_ccDesde).forEach(f=>{saldoPrevio+=f.total;});
+      recs.filter(r=>r.fecha<_ccDesde).forEach(r=>{saldoPrevio-=r.importe;});
+      ncs.filter(n=>n.fecha<_ccDesde).forEach(n=>{saldoPrevio-=n.importe;});
+    }
+    // en período
+    var fvsP=_ccDesde?fvs.filter(f=>f.fecha>=_ccDesde):fvs;
+    var recsP=_ccDesde?recs.filter(r=>r.fecha>=_ccDesde):recs;
+    var ncsP=_ccDesde?ncs.filter(n=>n.fecha>=_ccDesde):ncs;
+    if(_ccHasta){fvsP=fvsP.filter(f=>f.fecha<=_ccHasta);recsP=recsP.filter(r=>r.fecha<=_ccHasta);ncsP=ncsP.filter(n=>n.fecha<=_ccHasta);}
+    var debito=fvsP.reduce((s,f)=>s+f.total,0);
+    var credito=recsP.reduce((s,r)=>s+r.importe,0)+ncsP.reduce((s,n)=>s+n.importe,0);
+    var saldo=saldoPrevio+debito-credito;
+    var tieneMovs=(fvs.length+recs.length+ncs.length)>0;
+    return {saldoPrevio,debito,credito,saldo,tieneMovs};
+  }
+
+  // Aplicar filtros de checkbox
+  var clientesFilt=clientesCC.filter(function(cl){
+    var d=calcCC(cl);
+    if(_ccOcultarSinMovs&&!d.tieneMovs)return false;
+    if(_ccOcultarSinSaldo&&Math.abs(d.saldo)<0.001)return false;
+    if(_ccSoloDeudor&&d.saldo<=0)return false;
+    if(_ccSoloAcreedor&&d.saldo>=0)return false;
+    return true;
+  });
+
+  var rows=clientesFilt.map(function(cl){
+    var d=calcCC(cl);
+    var saldoCls=d.saldo>0?'color:var(--red)':d.saldo<0?'color:var(--green)':'color:var(--text2)';
     var cid=cl.id;
     return '<tr>'
       +'<td><strong>'+esc(cl.nombre)+'</strong>'+(cl.cuit?'<br><span style="font-size:11px;color:var(--text2)">'+esc(cl.cuit)+'</span>':'')+'</td>'
-      +'<td class="td-mono">'+fmtARS(debito)+'</td>'
-      +'<td class="td-mono">'+fmtARS(credito)+'</td>'
-      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(saldo)+'</td>'
+      +(_ccDesde?'<td class="td-mono" style="font-size:12px;color:var(--text2)">'+fmtARS(d.saldoPrevio)+'</td>':'')
+      +'<td class="td-mono">'+fmtARS(d.debito)+'</td>'
+      +'<td class="td-mono">'+fmtARS(d.credito)+'</td>'
+      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(d.saldo)+'</td>'
       +'<td><div class="td-act">'
-      +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente(\''+cid+'\')">Ver cuenta</button>'
+      +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente(\''+cid+'\',\''+(_ccDesde||'')+'\',\''+(_ccHasta||'')+'\')">Ver cuenta</button>'
       +'<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente(\''+cid+'\')" title="Nota de crédito">📝</button>'
       +'</div></td>'
       +'</tr>';
   }).join('');
 
-  var totalSaldo=clientesCC.reduce(function(s,cl){
-    var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
-    var recs=recsAll.filter(r=>r.clienteId===cl.id);
-    var ncs=ncsAll.filter(n=>n.clienteId===cl.id);
-    var d=fvs.reduce(function(a,f){return a+f.total;},0);
-    var cr=recs.reduce(function(a,r){return a+r.importe;},0)+ncs.reduce(function(a,n){return a+n.importe;},0);
-    return s+(d-cr);
-  },0);
+  var totalSaldo=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).saldo;},0);
+  var totalDeb=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).debito;},0);
+  var totalCred=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).credito;},0);
+
+  var theadPrevio=_ccDesde?'<th class="td-r">Saldo previo</th>':'';
+  var theadRow='<tr><th>Cliente</th>'+theadPrevio+'<th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th><th></th></tr>';
 
   document.getElementById('main-content').innerHTML=`
     <div class="g3 mb20">
-      <div class="stat-card"><div class="stat-lbl">Clientes en CC</div><div class="stat-val" style="color:var(--accent)">${clientesCC.length}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Saldo total a cobrar</div><div class="stat-val" style="color:${totalSaldo>=0?'var(--red)':'var(--green)'}">${fmtARS(Math.abs(totalSaldo))}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Clientes</div><div class="stat-val" style="color:var(--accent)">${clientesFilt.length}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Total débito</div><div class="stat-val" style="color:var(--red);font-size:16px">${fmtARS(totalDeb)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Total crédito</div><div class="stat-val" style="color:var(--green);font-size:16px">${fmtARS(totalCred)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Saldo total</div><div class="stat-val" style="color:${totalSaldo>=0?'var(--red)':'var(--green)'};font-size:16px">${fmtARS(Math.abs(totalSaldo))}</div></div>
     </div>
-    <div class="toolbar">
-      <div class="toolbar-l"><div class="sw"><span class="si">🔍</span><input value="${esc(_ccQ)}" placeholder="Buscar cliente..." oninput="_ccQ=this.value;renderCCClientes()" style="width:240px;padding-left:32px"></div></div>
+    <div class="card mb16">
+      <div class="flex-c gap8 flex-wrap">
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Desde</label><input type="date" value="${_ccDesde}" onchange="_ccDesde=this.value;renderCCClientes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Hasta</label><input type="date" value="${_ccHasta}" onchange="_ccHasta=this.value;renderCCClientes()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:1;min-width:180px;align-self:flex-end"><div class="sw" style="position:relative"><span class="si" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3)">🔍</span><input value="${esc(_ccQ)}" placeholder="Buscar cliente..." oninput="_ccQ=this.value;renderCCClientes()" style="width:100%;padding:7px 10px 7px 32px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font);background:var(--surface)"></div></div>
+        <div class="fg" style="margin:0;flex:0 0 auto;align-self:flex-end"><button class="btn btn-ghost btn-sm" onclick="_ccDesde='';_ccHasta='';_ccQ='';renderCCClientes()">↺ Limpiar</button></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccSoloDeudor?'checked':''} onchange="_ccSoloDeudor=this.checked;if(_ccSoloDeudor)_ccSoloAcreedor=false;renderCCClientes()"> Solo saldo deudor (deben)</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccSoloAcreedor?'checked':''} onchange="_ccSoloAcreedor=this.checked;if(_ccSoloAcreedor)_ccSoloDeudor=false;renderCCClientes()"> Solo saldo acreedor (a favor)</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccOcultarSinSaldo?'checked':''} onchange="_ccOcultarSinSaldo=this.checked;renderCCClientes()"> Ocultar sin saldo</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccOcultarSinMovs?'checked':''} onchange="_ccOcultarSinMovs=this.checked;renderCCClientes()"> Ocultar sin movimientos</label>
+      </div>
     </div>
-    ${clientesCC.length?`<div class="tw"><table><thead><tr><th>Cliente</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th><th></th></tr></thead>
+    <div class="toolbar mb12" style="padding:0">
+      <div style="flex:1;font-size:14px;font-weight:600">Cuentas corrientes${_ccDesde||_ccHasta?' · período filtrado':''}</div>
+      <button class="btn btn-secondary btn-sm" onclick="exportarExcelCCGlobal()">⬇ Excel</button>
+    </div>
+    ${clientesFilt.length?`<div class="tw"><table><thead>${theadRow}</thead>
     <tbody>${rows}</tbody></table></div>`
     :`<div class="empty"><div class="ei">📒</div><h3>Sin cuentas corrientes</h3><p>Los clientes con condición CC aparecerán aquí</p></div>`}`;
 }
@@ -3079,9 +3126,9 @@ async function verCCCliente(clienteId,desde,hasta){
   var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');}catch(e){}
   // todos los movimientos sin filtro (para calcular saldo previo)
   const allMovs=[
-    ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
-    ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe})),
-    ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota crédito',numero:n.numero,debito:0,credito:n.importe})),
+    ...fvs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0,id:f.id,tabla:'facturas_venta'})),
+    ...recs.map(r=>({fecha:r.fecha,tipo:'Recibo',numero:r.numero,debito:0,credito:r.importe,id:r.id,tabla:'recibos_cobro'})),
+    ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota crédito',numero:n.numero,debito:0,credito:n.importe,id:n.id,tabla:'notas_credito'})),
   ].sort((a,b)=>a.fecha<b.fecha?-1:1);
   // Calcular saldo previo (movimientos ANTES del período)
   let saldoPrevio=0;
@@ -3117,13 +3164,14 @@ async function verCCCliente(clienteId,desde,hasta){
       <button class="btn btn-secondary btn-sm" onclick="closeModal();abrirNotaCreditoCliente('${cid}')">📝 Nota de crédito</button>
     </div>
     ${(desde||hasta)?`<div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:10px;font-size:13px;display:flex;justify-content:space-between;align-items:center"><span style="color:var(--text2)">Saldo acumulado anterior al período:</span><span style="font-family:var(--mono);font-weight:600;color:${saldoPrevio>0?'var(--red)':saldoPrevio<0?'var(--green)':'var(--text)'};">${fmtARS(saldoPrevio)}</span></div>`:''}
-    ${rows.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo acum.</th></tr></thead>
+    ${rows.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo acum.</th><th></th></tr></thead>
     <tbody>`+rows.map(function(r){
       return '<tr>'
         +'<td>'+esc(r.fecha)+'</td><td>'+esc(r.tipo)+'</td><td class="td-mono">'+esc(r.numero)+'</td>'
         +'<td class="td-mono td-r" style="color:var(--red)">'+(r.debito?fmtARS(r.debito):'—')+'</td>'
         +'<td class="td-mono td-r" style="color:var(--green)">'+(r.credito?fmtARS(r.credito):'—')+'</td>'
         +'<td class="td-mono td-r" style="font-weight:600;color:'+(r.saldo>0?'var(--red)':r.saldo<0?'var(--green)':'var(--text)')+'">'+fmtARS(r.saldo)+'</td>'
+        +'<td><div class="td-act">'+(r.tabla==='facturas_venta'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir factura" onclick="imprimirComprobante(\'fv\',\''+r.id+'\')">🖨️</button>':r.tabla==='recibos_cobro'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir recibo" onclick="imprimirComprobante(\'recibo\',\''+r.id+'\')">🖨️</button>':'')+'</div></td>'
         +'</tr>';
     }).join('')+`</tbody></table></div>`
     :`<div class="empty" style="padding:24px"><p>Sin movimientos en el período seleccionado</p></div>`}
@@ -3177,6 +3225,52 @@ async function imprimirCC(clienteId,desde,hasta){
   abrirVentanaImpresion(html);
 }
 
+async function exportarExcelCCGlobal(){
+  try{
+    const eid=_empresa.id;
+    const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
+    const fvsAll=await DB.getE(eid,'facturas_venta');
+    const recsAll=await DB.getE(eid,'recibos_cobro');
+    var ncsAll=[];try{ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');}catch(e){}
+    var clientesCC=clientes.filter(function(cl){
+      return cl.condicionCobro==='cc'||fvsAll.some(f=>f.clienteId===cl.id&&f.tipo==='cc')||recsAll.some(r=>r.clienteId===cl.id);
+    });
+    if(_ccQ){var q=_ccQ.toLowerCase();clientesCC=clientesCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));}
+    function calcCC2(cl){
+      var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
+      var recs=recsAll.filter(r=>r.clienteId===cl.id);
+      var ncs=ncsAll.filter(n=>n.clienteId===cl.id);
+      var saldoPrevio=0;
+      if(_ccDesde){fvs.filter(f=>f.fecha<_ccDesde).forEach(f=>{saldoPrevio+=f.total;});recs.filter(r=>r.fecha<_ccDesde).forEach(r=>{saldoPrevio-=r.importe;});ncs.filter(n=>n.fecha<_ccDesde).forEach(n=>{saldoPrevio-=n.importe;});}
+      var fvsP=_ccDesde?fvs.filter(f=>f.fecha>=_ccDesde):fvs;var recsP=_ccDesde?recs.filter(r=>r.fecha>=_ccDesde):recs;var ncsP=_ccDesde?ncs.filter(n=>n.fecha>=_ccDesde):ncs;
+      if(_ccHasta){fvsP=fvsP.filter(f=>f.fecha<=_ccHasta);recsP=recsP.filter(r=>r.fecha<=_ccHasta);ncsP=ncsP.filter(n=>n.fecha<=_ccHasta);}
+      var debito=fvsP.reduce((s,f)=>s+f.total,0);var credito=recsP.reduce((s,r)=>s+r.importe,0)+ncsP.reduce((s,n)=>s+n.importe,0);
+      var saldo=saldoPrevio+debito-credito;
+      var tieneMovs=(fvs.length+recs.length+ncs.length)>0;
+      return {saldoPrevio,debito,credito,saldo,tieneMovs};
+    }
+    var clientesFilt=clientesCC.filter(function(cl){
+      var d=calcCC2(cl);
+      if(_ccOcultarSinMovs&&!d.tieneMovs)return false;
+      if(_ccOcultarSinSaldo&&Math.abs(d.saldo)<0.001)return false;
+      if(_ccSoloDeudor&&d.saldo<=0)return false;
+      if(_ccSoloAcreedor&&d.saldo>=0)return false;
+      return true;
+    });
+    var header=_ccDesde?['Cliente','CUIT','Saldo previo','Débito','Crédito','Saldo']:['Cliente','CUIT','Débito','Crédito','Saldo'];
+    var aoa=[header];
+    clientesFilt.forEach(function(cl){
+      var d=calcCC2(cl);
+      if(_ccDesde)aoa.push([cl.nombre,cl.cuit||'',d.saldoPrevio,d.debito,d.credito,d.saldo]);
+      else aoa.push([cl.nombre,cl.cuit||'',d.debito,d.credito,d.saldo]);
+    });
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb,ws,'CC Clientes');
+    XLSX.writeFile(wb,'CC_Clientes_'+today()+'.xlsx');
+    toast('Excel descargado','success');
+  }catch(e){toast('Error al exportar: '+e.message,'error');}
+}
 async function exportarExcelCC(clienteId,desde,hasta){
   try{
     const eid=_empresa.id;
