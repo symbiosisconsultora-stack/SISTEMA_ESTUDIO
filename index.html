@@ -1070,6 +1070,7 @@ async function navTo(sec){
   showLoading('Cargando...');
   const map={
     dashboard:renderDashboard,ventas:renderVentas,compras:renderCompras,
+    'facturacion-masiva':renderFacMasiva,
     'cc-clientes':renderCCClientes,
     tesoreria:renderTesoreria,informes:renderInformes,
     clientes:renderClientes,proveedores:renderProveedores,
@@ -1157,6 +1158,10 @@ async function renderClientes(){
         <div class="sw"><span class="si">🔍</span><input value="${esc(_clQ)}" placeholder="Buscar cliente..." oninput="_clQ=this.value;renderClientes()" style="width:240px;padding-left:32px"></div>
       </div>
       ${xlsxToolbarBtns('clientes')}
+      <label class="btn btn-secondary btn-sm" style="cursor:pointer" title="Importar abonos desde Excel">
+        📥 Importar abonos
+        <input type="file" accept=".xlsx,.xls" style="display:none" onchange="importarAbonos(this)">
+      </label>
       <button class="btn btn-secondary btn-sm" onclick="actualizarAbonosGlobal()">📈 Actualizar abonos</button>
       <button class="btn btn-primary btn-sm" onclick="openClienteModal()">+ Nuevo cliente</button>
     </div>
@@ -1866,6 +1871,7 @@ async function renderVentas(){
         <div class="sw"><span class="si">🔍</span><input value="${esc(_fvQ)}" placeholder="Buscar factura o cliente..." oninput="_fvQ=this.value;renderVentas()" style="width:240px;padding-left:32px"></div>
       </div>
       <button class="btn btn-secondary btn-sm" onclick="navTo('clientes')">👥 Clientes</button>
+      <button class="btn btn-secondary btn-sm" onclick="navTo('facturacion-masiva')">📋 Abonos mensuales</button>
       <button class="btn btn-primary btn-sm" onclick="openFVModal()">+ Nueva factura</button>
     </div>
     ${f.length?`<div class="tw"><table><thead><tr><th>N°</th><th>Fecha</th><th>Cliente</th><th>Tipo</th><th class="td-r">Total</th><th>Estado</th><th></th></tr></thead><tbody>
@@ -2127,15 +2133,36 @@ async function renderFacMasiva(){
   const clientes=allCls.filter(x=>x.activo&&((x.abonos&&x.abonos.length)||(x.serviciosHabituales&&x.serviciosHabituales.length)));
   // helper: obtener lineas de abono del cliente (abonos tiene prioridad, fallback a serviciosHabituales)
   const getAbonos=cl=>(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
+  // Info último lote
+  const fvsAll=await DB.getE(eid,'facturas_venta');
+  const facsConLote=fvsAll.filter(f=>f.loteAbonos);
+  let ultimoLoteHtml='';
+  if(facsConLote.length){
+    const ultimoLoteId=facsConLote.reduce((prev,curr)=>(curr.fechaCreacion>prev.fechaCreacion?curr:prev)).loteAbonos;
+    const facsUltimoLote=facsConLote.filter(f=>f.loteAbonos===ultimoLoteId);
+    const fechaUltimoLote=facsUltimoLote[0].fecha;
+    const totalUltimoLote=facsUltimoLote.reduce((s,f)=>s+f.total,0);
+    ultimoLoteHtml=`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+      <div><span style="font-size:12px;color:var(--text2)">Último lote generado</span><br>
+      <strong style="font-size:13px">${facsUltimoLote.length} factura${facsUltimoLote.length!==1?'s':''} · ${fechaUltimoLote} · ${fmtARS(totalUltimoLote)}</strong></div>
+      <button class="btn btn-secondary btn-sm" onclick="deshacerFacMasiva()" style="white-space:nowrap">↩ Deshacer lote</button>
+    </div>`;
+  }
   if(!clientes.length){
-    document.getElementById('main-content').innerHTML=`<div class="empty"><div class="ei">📋</div><h3>Sin clientes con abonos</h3><p>Asigná abonos mensuales a los clientes activos para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
+    document.getElementById('main-content').innerHTML=`${ultimoLoteHtml}<div class="empty"><div class="ei">📋</div><h3>Sin clientes con abonos</h3><p>Asigná abonos mensuales a los clientes activos para usar la facturación masiva</p><br><button class="btn btn-primary" onclick="navTo('clientes')">Ir a Clientes</button></div>`;
     return;
   }
+  // Mes cerrado — avisar
+  const cfg=await DB.cfg(eid);
+  const cierres=cfg.cierres||[];
+  const mesCerradoAviso=cierres.length?`<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:12px;color:#92400e">⚠ Meses cerrados: ${cierres.map(c=>c.mes).join(', ')} — no podés generar facturas para esos meses</div>`:'';
   // render
   document.getElementById('main-content').innerHTML=`
+    ${ultimoLoteHtml}
     <div class="card">
       <h3 class="fw6 mb8" style="font-size:14px">Facturación masiva mensual</h3>
       <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Revisá y confirmá las facturas a generar</p>
+      ${mesCerradoAviso}
       <div class="row2 mb16">
         <div class="fg"><label>Fecha de emisión</label><input id="fm-fecha" type="date" value="${today()}"></div>
       </div>
@@ -2160,24 +2187,85 @@ function fmToggleAll(cb){document.querySelectorAll('.fm-ck').forEach(x=>x.checke
 async function ejecutarFacMasiva(){
   const eid=_empresa.id;
   const fecha=document.getElementById('fm-fecha').value;
+  if(!fecha){toast('Seleccioná una fecha','error');return}
   const selected=[...document.querySelectorAll('.fm-ck:checked')].map(x=>x.value);
   if(!selected.length){toast('Seleccioná al menos un cliente','error');return}
-  const clientes=(await DB.getE(eid,'clientes')).filter(x=>selected.includes(x.id));
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
-  let fvs=await DB.getE(eid,'facturas_venta');let count=0;
-  clientes.forEach(cl=>{
-    const _abs=(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
-    const lineas=_abs.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
-    const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
-    const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;nums.FAC++;count++;
-    fvs.push({id:genId(),numero,fecha,clienteId:cl.id,tipo:cl.condicionCobro,
-      vencimiento:cl.condicionCobro==='cc'?addDays(fecha,cl.diasVenc||30):null,
-      total,lineas,estado:cl.condicionCobro==='contado'?'cobrada':'pendiente',
-      fechaCreacion:new Date().toISOString()});
-  });
-  await DB.setCfg(eid,{...cfg,nums});await DB.setE(eid,'facturas_venta',fvs);
-  toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}  ✓`,'success');
-  navTo('ventas');
+  // Control mes cerrado
+  const cfg=await DB.cfg(eid);
+  const mesFecha=fecha.substring(0,7);
+  const cierres=cfg.cierres||[];
+  if(cierres.some(c=>c.mes>=mesFecha)){
+    toast(`El mes ${mesFecha} o un mes posterior está cerrado — no se puede generar`,'error');return;
+  }
+  const totalSel=selected.length;
+  confirm(
+    '¿Generar facturas de abonos?',
+    `Se generarán facturas para ${totalSel} cliente${totalSel!==1?'s':''} con fecha ${fecha}. Esta operación se puede deshacer.`,
+    async()=>{
+      const clientes=(await DB.getE(eid,'clientes')).filter(x=>selected.includes(x.id));
+      const nums=getNums(cfg);
+      let fvs=await DB.getE(eid,'facturas_venta');
+      const loteId=genId(); // ID de lote para poder deshacer
+      let count=0;
+      clientes.forEach(cl=>{
+        const _abs=(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
+        if(!_abs.length)return;
+        const lineas=_abs.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
+        const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
+        const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;nums.FAC++;count++;
+        fvs.push({id:genId(),numero,fecha,clienteId:cl.id,tipo:cl.condicionCobro,
+          vencimiento:cl.condicionCobro==='cc'?addDays(fecha,cl.diasVenc||30):null,
+          total,lineas,estado:cl.condicionCobro==='contado'?'cobrada':'pendiente',
+          loteAbonos:loteId,
+          fechaCreacion:new Date().toISOString()});
+      });
+      showLoading('Generando facturas...');
+      await DB.setCfg(eid,{...cfg,nums});
+      await DB.setE(eid,'facturas_venta',fvs);
+      hideLoading();
+      toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}  ✓`,'success');
+      navTo('ventas');
+    }
+  );
+}
+
+async function deshacerFacMasiva(){
+  const eid=_empresa.id;
+  let fvs=await DB.getE(eid,'facturas_venta');
+  // Encontrar último lote
+  const lotesIds=[...new Set(fvs.filter(f=>f.loteAbonos).map(f=>f.loteAbonos))];
+  if(!lotesIds.length){toast('No hay lote de abonos para deshacer','error');return}
+  // Buscar el lote más reciente (último creado)
+  const facsDeLotes=fvs.filter(f=>f.loteAbonos);
+  const ultimoLoteId=facsDeLotes.reduce((prev,curr)=>(curr.fechaCreacion>prev.fechaCreacion?curr:prev)).loteAbonos;
+  const facsLote=fvs.filter(f=>f.loteAbonos===ultimoLoteId);
+  if(!facsLote.length){toast('No hay facturas en ese lote','error');return}
+  // Verificar mes cerrado
+  const cfg=await DB.cfg(eid);
+  const cierres=cfg.cierres||[];
+  const fechaLote=facsLote[0].fecha;
+  const mesLote=fechaLote.substring(0,7);
+  if(cierres.some(c=>c.mes>=mesLote)){
+    toast(`El mes ${mesLote} está cerrado — no se puede deshacer`,'error');return;
+  }
+  // Verificar que ninguna factura del lote esté cobrada
+  const cobradas=facsLote.filter(f=>f.estado==='cobrada'&&f.tipo==='cc');
+  if(cobradas.length){
+    toast(`${cobradas.length} factura${cobradas.length!==1?'s':''} del lote ya tiene${cobradas.length!==1?'n':''} cobro registrado — eliminá los cobros primero`,'error');return;
+  }
+  confirm(
+    '¿Deshacer generación de abonos?',
+    `Se eliminarán ${facsLote.length} factura${facsLote!==1?'s':''} del lote generado el ${fechaLote}. Esta acción no se puede deshacer.`,
+    async()=>{
+      showLoading('Deshaciendo...');
+      const idsLote=new Set(facsLote.map(f=>f.id));
+      const fvsRestantes=fvs.filter(f=>!idsLote.has(f.id));
+      await DB.setE(eid,'facturas_venta',fvsRestantes);
+      hideLoading();
+      toast(`${facsLote.length} factura${facsLote.length!==1?'s':''} eliminada${facsLote.length!==1?'s':''}`,'success');
+      navTo('facturacion-masiva');
+    }
+  );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -4154,6 +4242,85 @@ const MAESTROS = {
     idField: 'nombre',
   },
 };
+
+// ── Importar abonos desde xlsx ──────────────────────────────────────────────
+async function importarAbonos(input){
+  const file=input.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=async e=>{
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const sheetName=wb.SheetNames.find(n=>n!=='Instrucciones')||wb.SheetNames[0];
+      const ws=wb.Sheets[sheetName];
+      const rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+      if(!rows.length){toast('La planilla está vacía','error');return}
+      // Validar columnas
+      const first=rows[0];
+      if(!('CUIT' in first)||!('Concepto' in first)||!('Importe' in first)){
+        toast('Faltan columnas: CUIT, Concepto, Importe','error');return;
+      }
+      const eid=_empresa.id;
+      const clientes=await DB.getE(eid,'clientes');
+      // Agrupar abonos por CUIT
+      const abonosPorCuit={};
+      let omitidas=0;
+      rows.forEach(r=>{
+        const cuit=String(r['CUIT']||'').trim();
+        const concepto=String(r['Concepto']||'').trim();
+        const importe=parseFloat(String(r['Importe']).replace(/\./g,'').replace(',','.'))||0;
+        if(!cuit||!concepto){omitidas++;return}
+        if(!abonosPorCuit[cuit])abonosPorCuit[cuit]=[];
+        abonosPorCuit[cuit].push({descripcion:concepto,cantidad:1,precio:importe});
+      });
+      const cuitsEncontrados=Object.keys(abonosPorCuit);
+      const sinMatch=[];
+      let totalAbonos=0;
+      // Vista previa en modal
+      const resumen=cuitsEncontrados.map(cuit=>{
+        const cl=clientes.find(c=>c.cuit===cuit);
+        const abs=abonosPorCuit[cuit];
+        const sub=abs.reduce((s,a)=>s+a.precio,0);
+        if(!cl){sinMatch.push(cuit);return null}
+        totalAbonos+=abs.length;
+        return{cl,abs,sub};
+      }).filter(Boolean);
+      if(!resumen.length){toast('Ningún CUIT coincide con clientes del sistema','error');return}
+      const avisoOmitidas=sinMatch.length?`<p style="color:var(--red);font-size:12px;margin-top:8px">⚠ ${sinMatch.length} CUIT sin coincidencia: ${sinMatch.slice(0,5).join(', ')}${sinMatch.length>5?'…':''}</p>`:'';
+      openModal('Importar abonos — confirmar',`
+        <p style="margin-bottom:12px;font-size:13px">Se cargaran <strong>${totalAbonos} abonos</strong> en <strong>${resumen.length} cliente${resumen.length!==1?'s':''}</strong>. Los abonos existentes de esos clientes serán <strong>reemplazados</strong>.</p>
+        <div class="tw mb8" style="max-height:280px;overflow-y:auto"><table style="font-size:12px"><thead><tr><th>Cliente</th><th>Abonos</th><th class="td-r">Total</th></tr></thead><tbody>
+        ${resumen.map(({cl,abs,sub})=>`<tr><td>${esc(cl.nombre)}</td><td>${abs.map(a=>esc(a.descripcion)).join(', ')}</td><td class="td-mono td-r">${fmtARS(sub)}</td></tr>`).join('')}
+        </tbody></table></div>
+        ${avisoOmitidas}
+      `,[
+        {lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},
+        {lbl:`Confirmar importación`,cls:'btn-primary',fn:`_doImportAbonos()`}
+      ],true);
+      window._pendingAbonosImport=resumen.map(({cl,abs})=>({id:cl.id,abonos:abs}));
+    }catch(err){console.error(err);toast('Error al leer el archivo','error')}
+  };
+  reader.readAsArrayBuffer(file);
+  input.value='';
+}
+
+async function _doImportAbonos(){
+  const updates=window._pendingAbonosImport||[];
+  if(!updates.length){toast('Sin datos para importar','error');return}
+  showLoading('Importando abonos...');
+  closeModal();
+  const eid=_empresa.id;
+  let ok=0;
+  for(const {id,abonos} of updates){
+    const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===id);
+    if(!cl)continue;
+    await DB.upsertItem(eid,'clientes',{...cl,abonos});
+    ok++;
+  }
+  DB._clearCache&&DB._clearCache(eid,'clientes');
+  hideLoading();
+  toast(`Abonos importados en ${ok} cliente${ok!==1?'s':''}  ✓`,'success');
+  navTo('clientes');
+}
 
 // ── Convierte un item de DB a fila Excel (resuelve rubroNombre) ──
 function itemToRow(item, cols, rubros) {
