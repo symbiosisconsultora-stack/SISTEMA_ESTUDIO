@@ -424,7 +424,16 @@ function getRawVal(el){
 // Normaliza el objeto nums con valores por defecto para todas las keys
 function getNums(cfg){
   const n=cfg.nums||{};
-  return {FAC:n.FAC||1,REC:n.REC||1,CMP:n.CMP||1,OP:n.OP||1,RC:n.RC||1,NCV:n.NCV||1,NCP:n.NCP||1,...n};
+  // Spread primero para heredar cualquier key extra, luego pisamos con valores seguros (nunca null/undefined/0)
+  return {...n,
+    FAC:parseInt(n.FAC)||1,
+    REC:parseInt(n.REC)||1,
+    CMP:parseInt(n.CMP)||1,
+    OP:parseInt(n.OP)||1,
+    RC:parseInt(n.RC)||1,
+    NCV:parseInt(n.NCV)||1,
+    NCP:parseInt(n.NCP)||1
+  };
 }
 const today=()=>new Date().toISOString().split('T')[0];
 const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x.toISOString().split('T')[0]};
