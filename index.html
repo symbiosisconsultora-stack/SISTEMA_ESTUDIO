@@ -404,6 +404,28 @@ const genId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const esc=s=>s==null?'':String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmtARS=n=>'$ '+Number(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtNum=n=>Number(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
+// Formatea un input numérico mientras escribe (punto de miles, coma decimal)
+function fmtInputMiles(el){
+  var raw=el.value.replace(/\./g,'').replace(',','.');
+  var num=parseFloat(raw);
+  if(!isNaN(num)){
+    // Guardar posición para no mover cursor
+    el.dataset.rawVal=String(num);
+    el.value=num.toLocaleString('es-AR',{minimumFractionDigits:0,maximumFractionDigits:2});
+  } else {
+    el.dataset.rawVal='0';
+  }
+}
+function getRawVal(el){
+  // Leer valor numérico real del input formateado
+  if(el.dataset.rawVal!==undefined) return parseFloat(el.dataset.rawVal)||0;
+  return parseFloat(el.value.replace(/\./g,'').replace(',','.'))||0;
+}
+// Normaliza el objeto nums con valores por defecto para todas las keys
+function getNums(cfg){
+  const n=cfg.nums||{};
+  return {FAC:n.FAC||1,REC:n.REC||1,CMP:n.CMP||1,OP:n.OP||1,RC:n.RC||1,NCV:n.NCV||1,NCP:n.NCP||1,...n};
+}
 const today=()=>new Date().toISOString().split('T')[0];
 const addDays=(d,n)=>{const x=new Date(d);x.setDate(x.getDate()+n);return x.toISOString().split('T')[0]};
 const hashPwd=p=>{let h=0;for(const c of p){h=((h<<5)-h)+c.charCodeAt(0);h|=0}return h.toString(16)};
@@ -1867,7 +1889,7 @@ async function openFVModal(){
   const eid=_empresa.id;
   const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
   const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   _fvLineas=[{id:genId(),desc:'',cantidad:1,precio:0}];
   openModal('Nueva factura de venta',`
@@ -1919,13 +1941,24 @@ async function fvRemoveLinea(id){
 }
 async function fvUpdateLinea(id,field,val){
   const ln=_fvLineas.find(x=>x.id===id);if(!ln)return;
-  if(field==='cantidad'||field==='precio')ln[field]=parseFloat(val)||0;
-  else{
+  if(field==='cantidad'||field==='precio'){
+    ln[field]=typeof val==='number'?val:parseFloat(String(val).replace(/\./g,'').replace(',','.'))||0;
+  } else {
     ln[field]=val;
     if(field==='desc'&&ln.precio===0){
       const eid=_empresa.id;
       const prod=(await DB.getE(eid,'productos_venta')).find(p=>p.descripcion.toLowerCase()===val.toLowerCase());
       if(prod){ln.precio=prod.precio;fvRenderLineas();return}
+    }
+  }
+  // Actualizar subtotal en el DOM sin re-renderizar toda la grilla
+  const cont=document.getElementById('fv-lineas');
+  if(cont){
+    const divs=cont.querySelectorAll('div[style*="grid"]');
+    const idx=_fvLineas.findIndex(x=>x.id===id);
+    if(idx>=0&&divs[idx]){
+      const sub=divs[idx].querySelectorAll('input')[3];
+      if(sub)sub.value=fmtNum(ln.cantidad*ln.precio);
     }
   }
   fvUpdateTotal();
@@ -1935,11 +1968,11 @@ async function fvRenderLineas(){
   const prods=(await DB.getE(eid,'productos_venta')).filter(x=>x.activo);
   const cont=document.getElementById('fv-lineas');if(!cont)return;
   cont.innerHTML=_fvLineas.map(ln=>`
-    <div style="display:grid;grid-template-columns:2fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
-      <div><input value="${esc(ln.desc)}" placeholder="Concepto..." oninput="fvUpdateLinea('${ln.id}','desc',this.value)" list="fv-prods" style="padding:7px 9px"></div>
-      <div><input type="number" value="${ln.cantidad}" min="0.01" step="0.01" oninput="fvUpdateLinea('${ln.id}','cantidad',this.value)" style="text-align:right;padding:7px 9px"></div>
-      <div><input type="number" value="${ln.precio}" min="0" step="0.01" oninput="fvUpdateLinea('${ln.id}','precio',this.value)" style="text-align:right;padding:7px 9px"></div>
-      <div><input value="${fmtNum(ln.cantidad*ln.precio)}" readonly style="text-align:right;padding:7px 9px;background:var(--surface2);font-family:var(--mono);font-size:12px"></div>
+    <div style="display:grid;grid-template-columns:minmax(0,2fr) 80px 120px 100px 28px;gap:6px;margin-bottom:6px;align-items:center">
+      <div><input value="${esc(ln.desc)}" placeholder="Concepto..." oninput="fvUpdateLinea('${ln.id}','desc',this.value)" list="fv-prods" style="width:100%;box-sizing:border-box;padding:7px 9px"></div>
+      <div><input inputmode="decimal" data-raw-val="${ln.cantidad}" value="${ln.cantidad.toLocaleString('es-AR',{maximumFractionDigits:2})}" oninput="fmtInputMiles(this);fvUpdateLinea('${ln.id}','cantidad',getRawVal(this))" style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px"></div>
+      <div><input inputmode="decimal" data-raw-val="${ln.precio}" value="${ln.precio>0?ln.precio.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}" placeholder="0,00" oninput="fmtInputMiles(this);fvUpdateLinea('${ln.id}','precio',getRawVal(this))" style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px"></div>
+      <div><input value="${fmtNum(ln.cantidad*ln.precio)}" readonly style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px;background:var(--surface2);font-family:var(--mono);font-size:12px"></div>
       <button class="btn btn-ghost btn-icon" onclick="fvRemoveLinea('${ln.id}')" style="padding:4px 6px;font-size:12px">✕</button>
     </div>
   `).join('')+`<datalist id="fv-prods">${prods.map(p=>`<option value="${esc(p.descripcion)}">`).join('')}</datalist>`;
@@ -1959,7 +1992,7 @@ async function saveFV(){
   const _fechaFV=document.getElementById('fv-f').value;
   if(await isMesCerrado(_fechaFV)){toast('El período '+_fechaFV.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
   const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{FAC:1};
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   nums.FAC++;await DB.setCfg(eid,{nums});
   const fac={id:genId(),numero,fecha:document.getElementById('fv-f').value,clienteId,tipo,total,lineas,
@@ -2186,7 +2219,7 @@ async function openFCModal(){
   const provs=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
   const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
   const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{CMP:1};
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
   _fcLineas=[{id:genId(),desc:'',rubro:'',cantidad:1,precio:0}];
   openModal('Nueva factura de compra / gasto',`
@@ -2238,7 +2271,19 @@ function fcAddLinea(){_fcLineas.push({id:genId(),desc:'',rubro:'',cantidad:1,pre
 function fcRemoveLinea(id){_fcLineas=_fcLineas.filter(x=>x.id!==id);fcRenderLineas()}
 function fcUpdateLinea(id,field,val){
   const ln=_fcLineas.find(x=>x.id===id);if(!ln)return;
-  if(field==='cantidad'||field==='precio')ln[field]=parseFloat(val)||0;else ln[field]=val;
+  if(field==='cantidad'||field==='precio'){
+    ln[field]=typeof val==='number'?val:parseFloat(String(val).replace(/\./g,'').replace(',','.'))||0;
+  } else ln[field]=val;
+  // Actualizar subtotal en DOM sin re-renderizar
+  const cont=document.getElementById('fc-lineas');
+  if(cont){
+    const divs=cont.querySelectorAll('div[style*="grid"]');
+    const idx=_fcLineas.findIndex(x=>x.id===id);
+    if(idx>=0&&divs[idx]){
+      const sub=divs[idx].querySelectorAll('input[readonly]')[0];
+      if(sub)sub.value=fmtNum(ln.cantidad*ln.precio);
+    }
+  }
   fcUpdateTotal();
 }
 async function fcRenderLineas(){
@@ -2247,12 +2292,12 @@ async function fcRenderLineas(){
   const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
   const cont=document.getElementById('fc-lineas');if(!cont)return;
   cont.innerHTML=_fcLineas.map(ln=>`
-    <div style="display:grid;grid-template-columns:2fr 1fr 70px 110px 90px 28px;gap:5px;margin-bottom:5px;align-items:center">
-      <div><input value="${esc(ln.desc)}" placeholder="Concepto..." oninput="fcUpdateLinea('${ln.id}','desc',this.value)" list="fc-prods" style="padding:7px 9px"></div>
-      <div><select onchange="fcUpdateLinea('${ln.id}','rubro',this.value)" style="padding:7px 6px"><option value="">—</option>${rubros.map(r=>`<option value="${r.id}"${ln.rubro===r.id?' selected':''}>${esc(r.nombre)}</option>`).join('')}</select></div>
-      <div><input type="number" value="${ln.cantidad}" min="0.01" step="0.01" oninput="fcUpdateLinea('${ln.id}','cantidad',this.value)" style="text-align:right;padding:7px 9px"></div>
-      <div><input type="number" value="${ln.precio}" min="0" step="0.01" oninput="fcUpdateLinea('${ln.id}','precio',this.value)" style="text-align:right;padding:7px 9px"></div>
-      <div><input value="${fmtNum(ln.cantidad*ln.precio)}" readonly style="text-align:right;padding:7px 9px;background:var(--surface2);font-family:var(--mono);font-size:12px"></div>
+    <div style="display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) 80px 120px 100px 28px;gap:6px;margin-bottom:6px;align-items:center">
+      <div><input value="${esc(ln.desc)}" placeholder="Concepto..." oninput="fcUpdateLinea('${ln.id}','desc',this.value)" list="fc-prods" style="width:100%;box-sizing:border-box;padding:7px 9px"></div>
+      <div><select onchange="fcUpdateLinea('${ln.id}','rubro',this.value)" style="width:100%;box-sizing:border-box;padding:7px 6px"><option value="">—</option>${rubros.map(r=>`<option value="${r.id}"${ln.rubro===r.id?' selected':''}>${esc(r.nombre)}</option>`).join('')}</select></div>
+      <div><input inputmode="decimal" data-raw-val="${ln.cantidad}" value="${ln.cantidad.toLocaleString('es-AR',{maximumFractionDigits:2})}" oninput="fmtInputMiles(this);fcUpdateLinea('${ln.id}','cantidad',getRawVal(this))" style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px"></div>
+      <div><input inputmode="decimal" data-raw-val="${ln.precio}" value="${ln.precio>0?ln.precio.toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2}):''}" placeholder="0,00" oninput="fmtInputMiles(this);fcUpdateLinea('${ln.id}','precio',getRawVal(this))" style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px"></div>
+      <div><input value="${fmtNum(ln.cantidad*ln.precio)}" readonly style="width:100%;box-sizing:border-box;text-align:right;padding:7px 9px;background:var(--surface2);font-family:var(--mono);font-size:12px"></div>
       <button class="btn btn-ghost btn-icon" onclick="fcRemoveLinea('${ln.id}')" style="padding:4px 6px;font-size:12px">✕</button>
     </div>
   `).join('')+`<datalist id="fc-prods">${prods.map(p=>`<option value="${esc(p.descripcion)}">`).join('')}</datalist>`;
