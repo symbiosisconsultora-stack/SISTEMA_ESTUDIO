@@ -605,36 +605,44 @@ const DB = {
   },
 
   async setE(eid, tbl, items) {
-    // Estrategia segura: upsert los items nuevos/modificados, luego borrar solo los que desaparecieron
+    // Estrategia segura:
+    // 1. Upsert TODOS los items primero
+    // 2. Solo si el upsert fue exitoso, borrar huérfanos
+    // 3. Nunca borrar nada si el upsert falló
     DB._setCache(eid, tbl, items);
     try {
       if (items.length) {
-        // Upsert de todos los items actuales
         const rows = items.map(item => {
           const row = toDB(tbl, item);
           row.empresa_id = eid;
           return row;
         });
-        await fetch(`${SB_URL}/rest/v1/${tbl}`, {
+        const upsertRes = await fetch(`${SB_URL}/rest/v1/${tbl}`, {
           method: 'POST',
           headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
           body: JSON.stringify(rows)
         });
-        // Borrar solo los registros que ya no están en la lista nueva
+        // CRÍTICO: solo borrar huérfanos si el upsert fue exitoso
+        if (!upsertRes.ok) {
+          const errBody = await upsertRes.text().catch(()=>'');
+          console.error('setE upsert failed', tbl, upsertRes.status, errBody);
+          toast('Error al guardar ('+upsertRes.status+'): '+errBody.slice(0,120),'error');
+          return false;
+        }
         const newIds = items.map(i => i.id).filter(Boolean);
-        // Supabase: id=not.in.(id1,id2,...) — borra los huérfanos
         if (newIds.length) {
           await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}&id=not.in.(${newIds.join(',')})`, {
             method: 'DELETE', headers: sbHeaders()
           });
         }
       } else {
-        // Lista vacía → borrar todo (caso real de vaciado intencional)
+        // Lista vacía → borrar todo (vaciado intencional, ej. importar backup)
         await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}`, {
           method: 'DELETE', headers: sbHeaders()
         });
       }
-    } catch(e) { console.error('setE', tbl, e); }
+      return true;
+    } catch(e) { console.error('setE', tbl, e); toast('Error de conexión al guardar','error'); return false; }
   },
 
   // Upsert de un solo item (más eficiente que reescribir toda la tabla)
@@ -2094,10 +2102,11 @@ async function saveUsuario(id){
     activo:document.getElementById('us-act').value==='1',
     pwd:pwd?hashPwd(pwd):(old?old.pwd:hashPwd('admin')),
     empresasIds,empresaId:eid};
-  if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
   showLoading('Guardando...');
-  await DB.setE(eid,'usuarios',items);
+  const ok=await DB.upsertItem(eid,'usuarios',obj);
+  DB._clearCache(eid,'usuarios');
   hideLoading();
+  if(!ok)return;
   closeModal();toast('Usuario guardado','success');renderUsuarios();
 }
 
@@ -2655,10 +2664,12 @@ async function _guardarAbonosDesdeModal(clId){
     cantidad:parseFloat(r.querySelector('.ab-cant')?.value)||1,
     precio:parseFloat(r.querySelector('.ab-prec')?.value)||0
   })).filter(a=>a.descripcion);
-  const updated=todos.map(x=>x.id===resolvedId?{...x,abonos}:x);
+  const updatedCl={...cl,abonos};
   showLoading('Guardando abonos...');
-  await DB.setE(eid,'clientes',updated);
+  const ok=await DB.upsertItem(eid,'clientes',updatedCl);
+  DB._clearCache(eid,'clientes');
   hideLoading();
+  if(!ok)return;
   closeModal();
   toast('Abonos guardados  ✓','success');
   navTo('facturacion-masiva');
