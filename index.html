@@ -1732,7 +1732,7 @@ async function saveUsuario(id){
     empresasIds,empresaId:eid};
   if(id)items=items.map(x=>x.id===id?obj:x);else items.push(obj);
   showLoading('Guardando...');
-  await DB.upsertItem(eid,'usuarios',obj);
+  await DB.setE(eid,'usuarios',items);
   hideLoading();
   closeModal();toast('Usuario guardado','success');renderUsuarios();
 }
@@ -1778,7 +1778,7 @@ async function renderConfig(){
         <p style="font-size:12px;color:var(--text2);margin-bottom:16px">Próximo número a usar en cada serie</p>
         <div class="row2">
           <div class="fg"><label>Facturas venta (FAC)</label><input id="num-fac" type="number" min="1" value="${nums.FAC}"></div>
-          <div class="fg"><label>Recibos cobro (REC)</label><input id="num-rec" type="number" min="1" value="${nums.REC}"></div>
+          <div class="fg"><label>Recibos cobro (RC)</label><input id="num-rec" type="number" min="1" value="${nums.RC||1}"></div>
         </div>
         <div class="row2">
           <div class="fg"><label>Facturas compra (CMP)</label><input id="num-cmp" type="number" min="1" value="${nums.CMP}"></div>
@@ -1841,9 +1841,9 @@ async function saveEmpresaConfig(){
 }
 async function saveNums(){
   const cfg=await DB.cfg(_empresa.id);
-  const nums={FAC:+document.getElementById('num-fac').value||1,REC:+document.getElementById('num-rec').value||1,
+  const nums={...getNums(cfg),FAC:+document.getElementById('num-fac').value||1,RC:+document.getElementById('num-rec').value||1,
     CMP:+document.getElementById('num-cmp').value||1,OP:+document.getElementById('num-op').value||1};
-  await DB.setCfg(_empresa.id,{nums});toast('Numeraciones guardadas','success');
+  await DB.setCfg(_empresa.id,{...cfg,nums});toast('Numeraciones guardadas','success');
 }
 async function delEmpresa(){
   confirm('¿Eliminar empresa?','Se eliminarán TODOS los datos. Acción irreversible.',async()=>{
@@ -2063,8 +2063,8 @@ async function abrirReciboRapido(facId){
   const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
   const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
   const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
-  const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
+  const numero=`RC-${String(nums.RC||1).padStart(5,'0')}`;
   openModal('Registrar cobro',`
     <div class="row2">
       <div class="fg"><label>N° Recibo</label><input value="${numero}" readonly></div>
@@ -2104,15 +2104,16 @@ async function saveReciboRapido(facId){
   }
   const _fechaRR=document.getElementById('rc-f').value;
   if(await isMesCerrado(_fechaRR)){toast('El período '+_fechaRR.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{REC:1};
-  const numero=`REC-${String(nums.REC).padStart(5,'0')}`;
-  nums.REC++;await DB.setCfg(eid,{...cfg,nums});
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
+  const numero=`RC-${String(nums.RC||1).padStart(5,'0')}`;
+  nums.RC=(nums.RC||1)+1;await DB.setCfg(eid,{...cfg,nums});
   const fac=(await DB.getE(eid,'facturas_venta')).find(x=>x.id===facId);
   const recibo={id:genId(),numero,fecha:document.getElementById('rc-f').value,
     clienteId:fac.clienteId,importe,formaPagoId:fpId,
     ...(bancoId&&{bancoId}),
     ...(cajaId&&{cajaId}),
     facturaIds:[facId],
+    comprobantesAplicados:[{id:facId,tipo:'fv',numero:fac.numero,importeAplicado:importe}],
     observaciones:document.getElementById('rc-obs').value.trim(),
     fechaCreacion:new Date().toISOString()};
   const recibos=await DB.getE(eid,'recibos_cobro');recibos.push(recibo);
@@ -2166,7 +2167,7 @@ async function renderFacMasiva(){
       <div class="row2 mb16">
         <div class="fg"><label>Fecha de emisión</label><input id="fm-fecha" type="date" value="${today()}"></div>
       </div>
-      <div class="tw mb16"><table><thead><tr><th><input type="checkbox" id="fm-all" onchange="fmToggleAll(this)"></th><th>Cliente</th><th>Servicios</th><th class="td-r">Total</th></tr></thead>
+      <div class="tw mb16"><table><thead><tr><th><input type="checkbox" id="fm-all" onchange="fmToggleAll(this)"></th><th>Cliente</th><th>Abonos</th><th class="td-r">Total</th><th></th></tr></thead>
       <tbody id="fm-tbody">
         ${clientes.map(cl=>{
           const abs=getAbonos(cl);
@@ -2174,16 +2175,72 @@ async function renderFacMasiva(){
           return`<tr>
             <td><input type="checkbox" class="fm-ck" value="${cl.id}" checked></td>
             <td>${esc(cl.nombre)}</td>
-            <td>${abs.map(s=>`${esc(s.descripcion)} x${s.cantidad}`).join(', ')}</td>
+            <td style="font-size:12px;color:var(--text2)">${abs.map(s=>`${esc(s.descripcion)} x${s.cantidad} · ${fmtARS(s.precio)}`).join('<br>')}</td>
             <td class="td-mono td-r">${fmtARS(sub)}</td>
+            <td><button class="btn btn-ghost btn-sm btn-icon" onclick="editarAbonosCliente('${cl.id}')" title="Editar abonos">✏️</button></td>
           </tr>`;
         }).join('')}
       </tbody></table></div>
+      <button class="btn btn-secondary btn-sm" onclick="editarAbonosCliente(null)" style="margin-bottom:12px">+ Agregar cliente con abono</button>
       <button class="btn btn-primary" onclick="ejecutarFacMasiva()">✓ Generar facturas</button>
     </div>`;
   document.getElementById('fm-all').checked=true;
 }
 function fmToggleAll(cb){document.querySelectorAll('.fm-ck').forEach(x=>x.checked=cb.checked)}
+
+// ─── ABM abonos desde pantalla de facturación masiva ─────
+async function editarAbonosCliente(clId){
+  const eid=_empresa.id;
+  const todos=await DB.getE(eid,'clientes');
+  const cl=clId?todos.find(x=>x.id===clId):null;
+  const abs=(cl&&cl.abonos&&cl.abonos.length)?cl.abonos:(cl&&cl.serviciosHabituales&&cl.serviciosHabituales.length)?cl.serviciosHabituales:[];
+  // listado de clientes sin abonos para modo "agregar"
+  const sinAbonos=!clId?todos.filter(x=>x.activo&&!(x.abonos&&x.abonos.length)&&!(x.serviciosHabituales&&x.serviciosHabituales.length)):[];
+  const clOpts=sinAbonos.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('');
+  const absRows=abs.map((a,i)=>`
+    <tr id="ab-row-${i}">
+      <td><input class="ab-desc" style="width:100%" value="${esc(a.descripcion||'')}"></td>
+      <td><input class="ab-cant" type="number" min="1" step="1" style="width:60px" value="${a.cantidad||1}"></td>
+      <td><input class="ab-prec" type="number" min="0" step="0.01" style="width:100px" value="${a.precio||0}"></td>
+      <td><button class="btn btn-ghost btn-sm btn-icon" onclick="this.closest('tr').remove()">🗑️</button></td>
+    </tr>`).join('');
+  openModal(cl?`Abonos: ${cl.nombre}`:'Asignar abonos a cliente',`
+    ${!clId?`<div class="fg mb8"><label>Cliente</label><select id="abm-cl">${clOpts||'<option value="">Sin clientes disponibles</option>'}</select></div>`:''}
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr><th style="text-align:left;padding:4px 6px">Descripción</th><th style="padding:4px 6px">Cant.</th><th style="padding:4px 6px">Precio</th><th></th></tr></thead>
+      <tbody id="abm-rows">${absRows}</tbody>
+    </table>
+    <button class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="
+      const tbody=document.getElementById('abm-rows');
+      const i=tbody.querySelectorAll('tr').length;
+      const tr=document.createElement('tr');tr.id='ab-row-'+i;
+      tr.innerHTML='<td><input class=\\'ab-desc\\' style=\\'width:100%\\' placeholder=\\'Descripción\\'></td><td><input class=\\'ab-cant\\' type=\\'number\\' min=\\'1\\' value=\\'1\\' style=\\'width:60px\\'></td><td><input class=\\'ab-prec\\' type=\\'number\\' min=\\'0\\' step=\\'0.01\\' value=\\'0\\' style=\\'width:100px\\'></td><td><button class=\\'btn btn-ghost btn-sm btn-icon\\' onclick=\\'this.closest(\\'tr\\').remove()\\'>🗑️</button></td>';
+      tbody.appendChild(tr);">+ Línea</button>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar abonos',cls:'btn-primary',fn:`_guardarAbonosDesdeModal('${clId||''}')`}]);
+}
+async function _guardarAbonosDesdeModal(clId){
+  const eid=_empresa.id;
+  const resolvedId=clId||document.getElementById('abm-cl')?.value;
+  if(!resolvedId){toast('Seleccioná un cliente','error');return}
+  const todos=await DB.getE(eid,'clientes');
+  const cl=todos.find(x=>x.id===resolvedId);
+  if(!cl){toast('Cliente no encontrado','error');return}
+  const rows=[...document.querySelectorAll('#abm-rows tr')];
+  const abonos=rows.map(r=>({
+    id:r.id?.replace('ab-row-','ab-')||genId(),
+    descripcion:r.querySelector('.ab-desc')?.value.trim()||'',
+    cantidad:parseFloat(r.querySelector('.ab-cant')?.value)||1,
+    precio:parseFloat(r.querySelector('.ab-prec')?.value)||0
+  })).filter(a=>a.descripcion);
+  const updated=todos.map(x=>x.id===resolvedId?{...x,abonos}:x);
+  showLoading('Guardando abonos...');
+  await DB.setE(eid,'clientes',updated);
+  hideLoading();
+  closeModal();
+  toast('Abonos guardados  ✓','success');
+  navTo('facturacion-masiva');
+}
+
 async function ejecutarFacMasiva(){
   const eid=_empresa.id;
   const fecha=document.getElementById('fm-fecha').value;
@@ -2205,9 +2262,13 @@ async function ejecutarFacMasiva(){
       const clientes=(await DB.getE(eid,'clientes')).filter(x=>selected.includes(x.id));
       const nums=getNums(cfg);
       let fvs=await DB.getE(eid,'facturas_venta');
+      // Clientes que ya tienen factura de abono para este mes → saltear
+      const yaFacturadosEsMes=new Set(fvs.filter(f=>f.loteAbonos&&f.fecha&&f.fecha.startsWith(mesFecha)).map(f=>f.clienteId));
       const loteId=genId(); // ID de lote para poder deshacer
       let count=0;
+      let saltados=0;
       clientes.forEach(cl=>{
+        if(yaFacturadosEsMes.has(cl.id)){saltados++;return;}
         const _abs=(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
         if(!_abs.length)return;
         const lineas=_abs.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
@@ -2219,11 +2280,13 @@ async function ejecutarFacMasiva(){
           loteAbonos:loteId,
           fechaCreacion:new Date().toISOString()});
       });
+      if(!count){hideLoading();toast('No hay clientes nuevos para generar en '+mesFecha+' (todos ya tienen abono facturado ese mes)','info');return;}
       showLoading('Generando facturas...');
       await DB.setCfg(eid,{...cfg,nums});
       await DB.setE(eid,'facturas_venta',fvs);
       hideLoading();
-      toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}  ✓`,'success');
+      const saltMsg=saltados?` (${saltados} ya ten${saltados===1?'ía':'ían'} factura ese mes)`:'';
+      toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}${saltMsg}  ✓`,'success');
       navTo('ventas');
     }
   );
@@ -2697,16 +2760,16 @@ async function saveCobroDirecto(){
   }
   const _fechaCD=document.getElementById('cd-f').value;
   if(await isMesCerrado(_fechaCD)){toast('El período '+_fechaCD.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
-  const cfg=await DB.cfg(eid);const nums=cfg.nums||{RC:1};
-  if(!nums.RC)nums.RC=1;
-  const numero='RC-'+String(nums.RC).padStart(5,'0');nums.RC++;
-  await DB.setCfg(eid,{nums});
+  const cfg=await DB.cfg(eid);const nums=getNums(cfg);
+  const numero='RC-'+String(nums.RC||1).padStart(5,'0');
+  nums.RC=(nums.RC||1)+1;
+  await DB.setCfg(eid,{...cfg,nums});
   // Comprobantes seleccionados
   var compSelects=document.querySelectorAll('.cd-comp-check:checked');
   var compsAplicados=[];
   compSelects.forEach(function(cb){
-    var imp=parseFloat(document.getElementById('cd-comp-imp-'+cb.value)||0);
-    if(!imp){var inp=document.getElementById('cd-comp-imp-'+cb.value);imp=inp?parseFloat(inp.value)||0:0;}
+    var inp=document.getElementById('cd-comp-imp-'+cb.value);
+    var imp=inp?parseFloat(inp.value)||0:0;
     compsAplicados.push({id:cb.value,tipo:cb.dataset.tipo,numero:cb.dataset.num,importeAplicado:imp});
   });
   const rec={id:genId(),numero,fecha:document.getElementById('cd-f').value,
@@ -2804,6 +2867,26 @@ function eliminarMovTesoreria(tabla,id){
     } else if(tabla==='facturas_compra'){
       const fac=(await DB.getE(eid,'facturas_compra')).find(x=>x.id===id);
       if(fac){await DB.upsertItem(eid,'facturas_compra',Object.assign({},fac,{estado:'pendiente',fechaPago:null}));}
+    } else if(tabla==='recibos_cobro'){
+      // Al eliminar un cobro, revertir las facturas vinculadas a pendiente
+      const rec=_existingElim;
+      if(rec&&rec.facturaIds&&rec.facturaIds.length){
+        const fvs=await DB.getE(eid,'facturas_venta');
+        const idSet=new Set(rec.facturaIds);
+        const updated=fvs.map(f=>idSet.has(f.id)?Object.assign({},f,{estado:'pendiente',fechaCobro:null}):f);
+        await DB.setE(eid,'facturas_venta',updated);
+      }
+      await DB.deleteItem(eid,tabla,id);
+    } else if(tabla==='ordenes_pago'){
+      // Al eliminar un pago, revertir las facturas de compra vinculadas a pendiente
+      const op=_existingElim;
+      if(op&&op.facturaIds&&op.facturaIds.length){
+        const fcs=await DB.getE(eid,'facturas_compra');
+        const idSet=new Set(op.facturaIds);
+        const updated=fcs.map(f=>idSet.has(f.id)?Object.assign({},f,{estado:'pendiente',fechaPago:null}):f);
+        await DB.setE(eid,'facturas_compra',updated);
+      }
+      await DB.deleteItem(eid,tabla,id);
     } else {
       await DB.deleteItem(eid,tabla,id);
     }
