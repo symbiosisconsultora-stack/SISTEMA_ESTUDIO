@@ -381,7 +381,7 @@ td{padding:9px 13px;font-size:13px}
     <p id="c-msg">Esta acción no se puede deshacer.</p>
     <div class="ca">
       <button class="btn btn-secondary" onclick="closeConfirm()">Cancelar</button>
-      <button class="btn btn-danger" id="c-ok">Eliminar</button>
+      <button class="btn btn-primary" id="c-ok">Confirmar</button>
     </div>
   </div>
 </div>
@@ -597,26 +597,35 @@ const DB = {
   },
 
   async setE(eid, tbl, items) {
-    // Reemplaza la lista completa: borra todo y reinserta
-    // Para rendimiento usamos upsert + delete de los que ya no están
+    // Estrategia segura: upsert los items nuevos/modificados, luego borrar solo los que desaparecieron
     DB._setCache(eid, tbl, items);
     try {
-      // Borra todos los registros de la empresa para esta tabla
-      await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}`, {
-        method: 'DELETE', headers: sbHeaders()
-      });
-      if (!items.length) return;
-      // Inserta todos
-      const rows = items.map(item => {
-        const row = toDB(tbl, item);
-        row.empresa_id = eid;
-        return row;
-      });
-      await fetch(`${SB_URL}/rest/v1/${tbl}`, {
-        method: 'POST',
-        headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
-        body: JSON.stringify(rows)
-      });
+      if (items.length) {
+        // Upsert de todos los items actuales
+        const rows = items.map(item => {
+          const row = toDB(tbl, item);
+          row.empresa_id = eid;
+          return row;
+        });
+        await fetch(`${SB_URL}/rest/v1/${tbl}`, {
+          method: 'POST',
+          headers: sbHeaders({ 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+          body: JSON.stringify(rows)
+        });
+        // Borrar solo los registros que ya no están en la lista nueva
+        const newIds = items.map(i => i.id).filter(Boolean);
+        // Supabase: id=not.in.(id1,id2,...) — borra los huérfanos
+        if (newIds.length) {
+          await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}&id=not.in.(${newIds.join(',')})`, {
+            method: 'DELETE', headers: sbHeaders()
+          });
+        }
+      } else {
+        // Lista vacía → borrar todo (caso real de vaciado intencional)
+        await fetch(`${SB_URL}/rest/v1/${tbl}?empresa_id=eq.${eid}`, {
+          method: 'DELETE', headers: sbHeaders()
+        });
+      }
     } catch(e) { console.error('setE', tbl, e); }
   },
 
@@ -2119,10 +2128,66 @@ async function saveReciboRapido(facId){
   const recibos=await DB.getE(eid,'recibos_cobro');recibos.push(recibo);
   await DB.setE(eid,'recibos_cobro',recibos);
   // marcar factura cobrada
-  let fvs=await DB.getE(eid,'facturas_venta');
-  fvs=fvs.map(f=>f.id===facId?{...f,estado:'cobrada',fechaCobro:recibo.fecha}:f);
-  await DB.setE(eid,'facturas_venta',fvs);
+  const facToMark=await DB.getE(eid,'facturas_venta').then(fvs=>fvs.find(f=>f.id===facId));
+  if(facToMark){await DB.upsertItem(eid,'facturas_venta',{...facToMark,estado:'cobrada',fechaCobro:recibo.fecha});DB._clearCache(eid,'facturas_venta');}
   closeModal();toast(`Cobro registrado · ${numero}`,'success');renderVentas();
+}
+
+// ═══════════════════════════════════════════════════════════
+// EXPORTAR ABONOS EXCEL (formato importación)
+// ═══════════════════════════════════════════════════════════
+function exportarAbonosExcel(){
+  const eid=_empresa.id;
+  // Obtener clientes seleccionados actualmente
+  const cks=[...document.querySelectorAll('.fm-ck:checked')];
+  if(!cks.length){toast('Seleccioná al menos un cliente','error');return;}
+  const fecha=document.getElementById('fm-fecha')?.value||today();
+  DB.getE(eid,'clientes').then(todos=>{
+    const selIds=new Set(cks.map(c=>c.value));
+    const clientes=todos.filter(c=>selIds.has(c.id));
+    // Armar filas: una fila por línea de abono
+    const rows=[];
+    clientes.forEach(cl=>{
+      const abs=getAbonos(cl);
+      abs.forEach((a,i)=>{
+        rows.push({
+          Cliente:cl.nombre,
+          Descripcion:a.descripcion||'',
+          Cantidad:a.cantidad||1,
+          PrecioUnitario:a.precio||0,
+          Subtotal:(a.cantidad||1)*(a.precio||0),
+          FechaEmision:fecha,
+          CondicionCobro:cl.condicionCobro||'',
+          DiasVencimiento:cl.diasVenc||''
+        });
+      });
+    });
+    if(!rows.length){toast('No hay abonos para exportar','error');return;}
+    // Generar CSV compatible con Excel (UTF-8 BOM para acentos)
+    const headers=['Cliente','Descripcion','Cantidad','PrecioUnitario','Subtotal','FechaEmision','CondicionCobro','DiasVencimiento'];
+    const sep=';'; // punto y coma — estándar Argentina/Excel español
+    const csvLines=[headers.join(sep)];
+    rows.forEach(r=>{
+      csvLines.push(headers.map(h=>{
+        const v=r[h];
+        if(typeof v==='string'&&(v.includes(sep)||v.includes('"')||v.includes('\n'))){
+          return '"'+v.replace(/"/g,'""')+'"';
+        }
+        return v;
+      }).join(sep));
+    });
+    const bom='﻿';
+    const csvStr=bom+csvLines.join('\r\n');
+    const blob=new Blob([csvStr],{type:'text/csv;charset=utf-8;'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=`abonos_${fecha}.csv`;
+    document.body.appendChild(a);a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast(`${rows.length} fila${rows.length!==1?'s':''} exportada${rows.length!==1?'s':''}  ✓`,'success');
+  });
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2182,7 +2247,10 @@ async function renderFacMasiva(){
         }).join('')}
       </tbody></table></div>
       <button class="btn btn-secondary btn-sm" onclick="editarAbonosCliente(null)" style="margin-bottom:12px">+ Agregar cliente con abono</button>
-      <button class="btn btn-primary" onclick="ejecutarFacMasiva()">✓ Generar facturas</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" onclick="exportarAbonosExcel()">⬇ Exportar Excel</button>
+        <button class="btn btn-primary" onclick="ejecutarFacMasiva()">✓ Generar facturas</button>
+      </div>
     </div>`;
   document.getElementById('fm-all').checked=true;
 }
@@ -2873,8 +2941,9 @@ function eliminarMovTesoreria(tabla,id){
       if(rec&&rec.facturaIds&&rec.facturaIds.length){
         const fvs=await DB.getE(eid,'facturas_venta');
         const idSet=new Set(rec.facturaIds);
-        const updated=fvs.map(f=>idSet.has(f.id)?Object.assign({},f,{estado:'pendiente',fechaCobro:null}):f);
-        await DB.setE(eid,'facturas_venta',updated);
+        const toRevert=fvs.filter(f=>idSet.has(f.id));
+        for(const f of toRevert){await DB.upsertItem(eid,'facturas_venta',Object.assign({},f,{estado:'pendiente',fechaCobro:null}));}
+        DB._clearCache(eid,'facturas_venta');
       }
       await DB.deleteItem(eid,tabla,id);
     } else if(tabla==='ordenes_pago'){
@@ -2883,8 +2952,9 @@ function eliminarMovTesoreria(tabla,id){
       if(op&&op.facturaIds&&op.facturaIds.length){
         const fcs=await DB.getE(eid,'facturas_compra');
         const idSet=new Set(op.facturaIds);
-        const updated=fcs.map(f=>idSet.has(f.id)?Object.assign({},f,{estado:'pendiente',fechaPago:null}):f);
-        await DB.setE(eid,'facturas_compra',updated);
+        const toRevert=fcs.filter(f=>idSet.has(f.id));
+        for(const f of toRevert){await DB.upsertItem(eid,'facturas_compra',Object.assign({},f,{estado:'pendiente',fechaPago:null}));}
+        DB._clearCache(eid,'facturas_compra');
       }
       await DB.deleteItem(eid,tabla,id);
     } else {
