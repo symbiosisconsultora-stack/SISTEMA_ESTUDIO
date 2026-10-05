@@ -432,7 +432,9 @@ function getNums(cfg){
     OP:parseInt(n.OP)||1,
     RC:parseInt(n.RC)||1,
     NCV:parseInt(n.NCV)||1,
-    NCP:parseInt(n.NCP)||1
+    NCP:parseInt(n.NCP)||1,
+    LIQ:parseInt(n.LIQ)||1,
+    PS:parseInt(n.PS)||1
   };
 }
 const today=()=>new Date().toISOString().split('T')[0];
@@ -462,7 +464,10 @@ const TABLE_MAP = {
   recibos_cobro:   'recibos_cobro',
   facturas_compra: 'facturas_compra',
   ordenes_pago:    'ordenes_pago',
-  notas_credito:   'notas_credito',
+  notas_credito:        'notas_credito',
+  empleados:            'empleados',
+  liquidaciones_sueldo: 'liquidaciones_sueldo',
+  pagos_sueldo:         'pagos_sueldo',
 };
 
 // Campos snake_case ↔ camelCase por tabla
@@ -477,8 +482,11 @@ const FIELD_TO_DB = {
   facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
   recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
   ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
-  notas_credito:   { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
-  usuarios:        { empresaId:'empresa_id', empresasIds:'empresas_ids' },
+  notas_credito:        { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
+  empleados:            { fechaAlta:'fecha_alta' },
+  liquidaciones_sueldo: { empleadoId:'empleado_id', fechaCreacion:'fecha_creacion' },
+  pagos_sueldo:         { empleadoId:'empleado_id', liquidacionId:'liquidacion_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', fechaCreacion:'fecha_creacion' },
+  usuarios:             { empresaId:'empresa_id', empresasIds:'empresas_ids' },
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
@@ -1031,6 +1039,7 @@ const NAV_ITEMS=[
     {id:'cajas',icon:'🗄️',lbl:'Cajas'},
   ]},
   {sec:'Admin',admin:true,items:[
+    {id:'sueldos',icon:'👷',lbl:'Sueldos'},
     {id:'usuarios',icon:'👤',lbl:'Usuarios'},
     {id:'config',icon:'⚙️',lbl:'Configuración'},
   ]},
@@ -1053,6 +1062,8 @@ const SEC_INFO={
   cajas:['Cajas','Cajas de efectivo y valores'],
   usuarios:['Usuarios','Gestión de acceso'],
   config:['Configuración','Datos de la empresa'],
+  sueldos:['Sueldos','Empleados, liquidaciones y pagos'],
+  'facturacion-masiva':['Facturación Masiva','Generación de abonos mensuales'],
 };
 
 function renderNav(){
@@ -1089,6 +1100,7 @@ async function navTo(sec){
     'rubros-compra':()=>renderRubros('compra'),
     'formas-pago':renderFormasPago,
     bancos:renderBancos,cajas:renderCajas,usuarios:renderUsuarios,config:renderConfig,
+    sueldos:renderSueldos,
   };
   if(map[sec]) await map[sec](c);
   else c.innerHTML=`<div class="empty"><div class="ei">🚧</div><h3>En desarrollo</h3><p>Próximamente disponible</p></div>`;
@@ -1668,6 +1680,349 @@ async function saveCaja(id){
 }
 
 // ═══════════════════════════════════════════════════════════
+// SUELDOS
+// ═══════════════════════════════════════════════════════════
+let _suelEmp=null; // empleado seleccionado para CC
+
+async function renderSueldos(c){
+  if(_user.rol!=='admin'){(c||document.getElementById('main-content')).innerHTML=`<div class="empty"><div class="ei">🔐</div><h3>Sin acceso</h3><p>Solo administradores pueden ver este módulo</p></div>`;return}
+  const eid=_empresa.id;
+  const empleados=await DB.getE(eid,'empleados');
+  const liqAll=await DB.getE(eid,'liquidaciones_sueldo');
+  const pagAll=await DB.getE(eid,'pagos_sueldo');
+
+  const activos=empleados.filter(e=>e.activo!==false);
+
+  // Resumen de deudas por empleado
+  function saldoEmpleado(emp){
+    const liqs=liqAll.filter(l=>l.empleadoId===emp.id&&l.estado!=='pagada');
+    const pags=pagAll.filter(p=>p.empleadoId===emp.id);
+    const totalLiq=liqs.reduce((s,l)=>s+l.total,0);
+    const totalPag=pags.reduce((s,p)=>s+p.importe,0);
+    return totalLiq-totalPag;
+  }
+
+  const cont=c||document.getElementById('main-content');
+  cont.innerHTML=`
+    <div class="toolbar mb16">
+      <div class="toolbar-l"></div>
+      <button class="btn btn-primary btn-sm" onclick="openEmpleadoModal()">+ Nuevo empleado</button>
+    </div>
+    ${activos.length===0?`<div class="empty"><div class="ei">👷</div><h3>Sin empleados</h3><p>Agregá el primer empleado para comenzar</p></div>`:`
+    <div class="card">
+      <h3 class="fw6 mb12" style="font-size:14px">Empleados</h3>
+      <div class="tw"><table>
+        <thead><tr><th>Nombre</th><th>DNI</th><th class="td-r">Saldo pendiente</th><th>Acciones</th></tr></thead>
+        <tbody>
+          ${activos.map(emp=>{
+            const saldo=saldoEmpleado(emp);
+            return`<tr>
+              <td><strong>${esc(emp.nombre)}</strong></td>
+              <td class="td-mono">${esc(emp.dni||'—')}</td>
+              <td class="td-mono td-r" style="color:${saldo>0?'var(--red)':'var(--green)'}">${fmtARS(saldo)}</td>
+              <td style="display:flex;gap:6px;flex-wrap:wrap">
+                <button class="btn btn-secondary btn-sm" onclick="verCCEmpleado('${emp.id}')">📄 Cuenta corriente</button>
+                <button class="btn btn-primary btn-sm" onclick="openLiqModal('${emp.id}')">+ Liquidar</button>
+                <button class="btn btn-secondary btn-sm" onclick="editEmpleadoModal('${emp.id}')">✏️</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>`}
+  `;
+}
+
+function openEmpleadoModal(id){
+  const emp=id?null:null; // unused, for edit see editEmpleadoModal
+  openModal('Nuevo empleado',`
+    <div class="fg">
+      <div class="fc"><label class="lbl">Nombre completo *</label><input id="emp-nombre" class="inp" placeholder="Juan Pérez"></div>
+      <div class="fc"><label class="lbl">DNI</label><input id="emp-dni" class="inp" placeholder="12345678" maxlength="20"></div>
+    </div>
+  `,[{lbl:'Guardar',cls:'btn-primary',fn:saveEmpleado}]);
+  setTimeout(()=>document.getElementById('emp-nombre').focus(),50);
+}
+
+async function editEmpleadoModal(id){
+  const eid=_empresa.id;
+  const emps=await DB.getE(eid,'empleados');
+  const emp=emps.find(e=>e.id===id);
+  if(!emp)return;
+  openModal('Editar empleado',`
+    <div class="fg">
+      <div class="fc"><label class="lbl">Nombre completo *</label><input id="emp-nombre" class="inp" value="${esc(emp.nombre||'')}"></div>
+      <div class="fc"><label class="lbl">DNI</label><input id="emp-dni" class="inp" value="${esc(emp.dni||'')}" maxlength="20"></div>
+    </div>
+    <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border)">
+      <button class="btn btn-danger btn-sm" onclick="desactivarEmpleado('${id}')">🗑 Desactivar empleado</button>
+    </div>
+  `,[{lbl:'Guardar',cls:'btn-primary',fn:()=>saveEmpleado(id)}]);
+}
+
+async function saveEmpleado(id){
+  const nombre=document.getElementById('emp-nombre').value.trim();
+  if(!nombre){toast('El nombre es obligatorio','error');return;}
+  const dni=document.getElementById('emp-dni').value.trim();
+  const eid=_empresa.id;
+  const emp={id:id||genId(),nombre,dni,activo:true,fechaAlta:id?undefined:today()};
+  if(id)delete emp.fechaAlta;
+  await DB.upsertItem(eid,'empleados',emp);
+  DB._clearCache(eid,'empleados');
+  closeModal();toast(id?'Empleado actualizado':'Empleado creado ✓','success');
+  renderSueldos(document.getElementById('main-content'));
+}
+
+async function desactivarEmpleado(id){
+  const eid=_empresa.id;
+  const emps=await DB.getE(eid,'empleados');
+  const emp=emps.find(e=>e.id===id);
+  if(!emp)return;
+  confirm('Desactivar empleado','El empleado quedará inactivo y no aparecerá en el listado. Sus datos históricos se conservan.',async()=>{
+    await DB.upsertItem(eid,'empleados',{...emp,activo:false});
+    DB._clearCache(eid,'empleados');
+    closeModal();toast('Empleado desactivado','success');
+    renderSueldos(document.getElementById('main-content'));
+  });
+}
+
+async function openLiqModal(empleadoId){
+  const eid=_empresa.id;
+  const emps=await DB.getE(eid,'empleados');
+  const emp=emps.find(e=>e.id===empleadoId);
+  if(!emp)return;
+  const cfg=await DB.cfg(eid);
+  const nums=getNums(cfg);
+  const nextNum='LIQ-'+String(nums.LIQ||1).padStart(5,'0');
+  const mesActual=today().slice(0,7);
+  openModal('Liquidar sueldo · '+esc(emp.nombre),`
+    <input type="hidden" id="liq-empid" value="${empleadoId}">
+    <div class="fg">
+      <div class="fc"><label class="lbl">Período *</label><input id="liq-periodo" class="inp" type="month" value="${mesActual}"></div>
+      <div class="fc"><label class="lbl">Fecha *</label><input id="liq-fecha" class="inp" type="date" value="${today()}"></div>
+    </div>
+    <div class="fg">
+      <div class="fc"><label class="lbl">Sueldo básico</label><input id="liq-sueldo" class="inp" type="number" min="0" step="0.01" value="0" oninput="calcTotalLiq()"></div>
+      <div class="fc"><label class="lbl">Comisión</label><input id="liq-comision" class="inp" type="number" min="0" step="0.01" value="0" oninput="calcTotalLiq()"></div>
+    </div>
+    <div class="fc">
+      <label class="lbl">Total</label>
+      <div style="padding:10px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r);font-family:var(--mono);font-weight:700;font-size:16px" id="liq-total-display">$ 0,00</div>
+      <input type="hidden" id="liq-total" value="0">
+    </div>
+    <div class="fc mt8"><label class="lbl">Observaciones</label><textarea id="liq-obs" class="inp" rows="2" placeholder="Opcional"></textarea></div>
+  `,[{lbl:'Guardar liquidación',cls:'btn-primary',fn:saveLiquidacion}]);
+  setTimeout(()=>document.getElementById('liq-sueldo').focus(),50);
+}
+
+function calcTotalLiq(){
+  const s=parseFloat(document.getElementById('liq-sueldo').value)||0;
+  const c=parseFloat(document.getElementById('liq-comision').value)||0;
+  const t=s+c;
+  document.getElementById('liq-total').value=t;
+  document.getElementById('liq-total-display').textContent=fmtARS(t);
+}
+
+async function saveLiquidacion(){
+  const eid=_empresa.id;
+  const empleadoId=document.getElementById('liq-empid').value;
+  const periodo=document.getElementById('liq-periodo').value;
+  const fecha=document.getElementById('liq-fecha').value;
+  const sueldo=parseFloat(document.getElementById('liq-sueldo').value)||0;
+  const comision=parseFloat(document.getElementById('liq-comision').value)||0;
+  const total=sueldo+comision;
+  if(!periodo){toast('El período es obligatorio','error');return;}
+  if(!fecha){toast('La fecha es obligatoria','error');return;}
+  if(total<=0){toast('El total debe ser mayor a cero','error');return;}
+  const cfg=await DB.cfg(eid);
+  const nums=getNums(cfg);
+  const numLiq=nums.LIQ||1;
+  const numero='LIQ-'+String(numLiq).padStart(5,'0');
+  await DB.setCfg(eid,{...cfg,nums:{...nums,LIQ:numLiq+1}});
+  const liq={
+    id:genId(),empleadoId,numero,periodo,fecha,sueldo,comision,total,
+    estado:'pendiente',observaciones:document.getElementById('liq-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()
+  };
+  await DB.upsertItem(eid,'liquidaciones_sueldo',liq);
+  DB._clearCache(eid,'liquidaciones_sueldo');
+  closeModal();toast('Liquidación '+numero+' registrada ✓','success');
+  if(_suelEmp===empleadoId) await verCCEmpleado(empleadoId);
+  else await renderSueldos(document.getElementById('main-content'));
+}
+
+async function verCCEmpleado(empleadoId){
+  _suelEmp=empleadoId;
+  if(_user.rol!=='admin') return;
+  const eid=_empresa.id;
+  const emps=await DB.getE(eid,'empleados');
+  const emp=emps.find(e=>e.id===empleadoId);
+  if(!emp)return;
+  const liqs=( await DB.getE(eid,'liquidaciones_sueldo')).filter(l=>l.empleadoId===empleadoId);
+  const pags=(await DB.getE(eid,'pagos_sueldo')).filter(p=>p.empleadoId===empleadoId);
+  const fps=await DB.getE(eid,'formas_pago');
+
+  // Construir movimientos de CC
+  const movs=[
+    ...liqs.map(l=>({fecha:l.fecha,tipo:'Liquidación',numero:l.numero,periodo:l.periodo,debito:l.total,credito:0,estado:l.estado,id:l.id,tabla:'liq'})),
+    ...pags.map(p=>{const fp=fps.find(x=>x.id===p.formaPagoId);return{fecha:p.fecha,tipo:'Pago',numero:p.numero,debito:0,credito:p.importe,estado:'pagado',desc:fp?fp.nombre:'',id:p.id,tabla:'pag'};})
+  ].sort((a,b)=>a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0);
+
+  let saldo=0;
+  const rows=movs.map(m=>{
+    saldo+=m.debito-m.credito;
+    const signo=saldo>0?'var(--red)':saldo<0?'var(--green)':'var(--text)';
+    return`<tr>
+      <td>${esc(m.fecha)}</td>
+      <td><span class="badge ${m.tipo==='Liquidación'?'badge-yellow':'badge-green'}">${esc(m.tipo)}</span></td>
+      <td class="td-mono">${esc(m.numero||'')}</td>
+      <td>${esc(m.periodo||m.desc||'')}</td>
+      <td class="td-mono td-r" style="color:var(--red)">${m.debito>0?fmtARS(m.debito):'—'}</td>
+      <td class="td-mono td-r" style="color:var(--green)">${m.credito>0?fmtARS(m.credito):'—'}</td>
+      <td class="td-mono td-r" style="font-weight:600;color:${signo}">${fmtARS(Math.abs(saldo))}</td>
+      <td style="display:flex;gap:4px">
+        ${m.tabla==='liq'&&m.estado==='pendiente'?`<button class="btn btn-primary btn-sm" onclick="openPagoSueldoModal('${m.id}','${empleadoId}')">💰 Pagar</button>`:''}
+        ${m.tabla==='pag'?`<button class="btn btn-danger btn-sm" onclick="eliminarPagoSueldo('${m.id}','${empleadoId}')">🗑</button>`:''}
+      </td>
+    </tr>`;
+  }).join('');
+
+  const deuda=liqs.reduce((s,l)=>s+l.total,0)-pags.reduce((s,p)=>s+p.importe,0);
+
+  const cont=document.getElementById('main-content');
+  cont.innerHTML=`
+    <div class="toolbar mb16">
+      <div class="toolbar-l">
+        <button class="btn btn-secondary btn-sm" onclick="renderSueldos(document.getElementById('main-content'))">← Volver</button>
+        <span style="font-size:15px;font-weight:600;margin-left:12px">👷 ${esc(emp.nombre)}</span>
+        <span class="badge badge-blue" style="margin-left:8px">DNI: ${esc(emp.dni||'—')}</span>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="openLiqModal('${empleadoId}')">+ Liquidar</button>
+        ${deuda>0?`<button class="btn btn-primary btn-sm" onclick="openPagoSueldoModal(null,'${empleadoId}')">💰 Registrar pago</button>`:''}
+      </div>
+    </div>
+    <div class="stat-card mb16" style="display:inline-flex;gap:20px;padding:14px 20px">
+      <div><div class="stat-lbl">Saldo pendiente</div><div class="stat-val" style="color:${deuda>0?'var(--red)':deuda<0?'var(--green)':'var(--text2)'};">${fmtARS(deuda)}</div></div>
+      <div><div class="stat-lbl">Total liquidado</div><div class="stat-val">${fmtARS(liqs.reduce((s,l)=>s+l.total,0))}</div></div>
+      <div><div class="stat-lbl">Total pagado</div><div class="stat-val" style="color:var(--green)">${fmtARS(pags.reduce((s,p)=>s+p.importe,0))}</div></div>
+    </div>
+    <div class="card">
+      <h3 class="fw6 mb12" style="font-size:14px">Cuenta corriente</h3>
+      ${movs.length?`<div class="tw"><table>
+        <thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th>Período / Forma</th><th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th><th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`:`<p class="text-muted" style="font-size:13px">Sin movimientos aún</p>`}
+    </div>
+  `;
+}
+
+async function openPagoSueldoModal(liqId,empleadoId){
+  const eid=_empresa.id;
+  const fps=await DB.getE(eid,'formas_pago');
+  const cajas=await DB.getE(eid,'cajas');
+  const emps=await DB.getE(eid,'empleados');
+  const emp=emps.find(e=>e.id===empleadoId);
+
+  // Si se paga una liquidación específica, pre-llenar importe
+  let importePre=0;
+  if(liqId){
+    const liqs=await DB.getE(eid,'liquidaciones_sueldo');
+    const liq=liqs.find(l=>l.id===liqId);
+    if(liq){
+      const pags=(await DB.getE(eid,'pagos_sueldo')).filter(p=>p.liquidacionId===liqId);
+      importePre=liq.total-pags.reduce((s,p)=>s+p.importe,0);
+      if(importePre<0)importePre=0;
+    }
+  }
+
+  openModal('Registrar pago'+(emp?' · '+esc(emp.nombre):''),`
+    <input type="hidden" id="pago-liqid" value="${liqId||''}">
+    <input type="hidden" id="pago-empid" value="${empleadoId}">
+    <div class="fg">
+      <div class="fc"><label class="lbl">Fecha *</label><input id="pago-fecha" class="inp" type="date" value="${today()}"></div>
+      <div class="fc"><label class="lbl">Importe *</label><input id="pago-importe" class="inp" type="number" min="0" step="0.01" value="${importePre||''}"></div>
+    </div>
+    <div class="fg">
+      <div class="fc"><label class="lbl">Forma de pago</label>
+        <select id="pago-fp" class="inp">
+          <option value="">— Seleccionar —</option>
+          ${fps.filter(f=>f.activo).map(f=>`<option value="${f.id}">${esc(f.nombre)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="fc"><label class="lbl">Caja / Banco</label>
+        <select id="pago-caja" class="inp">
+          <option value="">— Opcional —</option>
+          ${cajas.filter(c=>c.activo).map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="fc mt8"><label class="lbl">Observaciones</label><textarea id="pago-obs" class="inp" rows="2" placeholder="Opcional"></textarea></div>
+  `,[{lbl:'Registrar pago',cls:'btn-primary',fn:savePagoSueldo}]);
+  setTimeout(()=>document.getElementById('pago-importe').focus(),50);
+}
+
+async function savePagoSueldo(){
+  const eid=_empresa.id;
+  const liqId=document.getElementById('pago-liqid').value||null;
+  const empleadoId=document.getElementById('pago-empid').value;
+  const fecha=document.getElementById('pago-fecha').value;
+  const importe=parseFloat(document.getElementById('pago-importe').value)||0;
+  const formaPagoId=document.getElementById('pago-fp').value||null;
+  const cajaId=document.getElementById('pago-caja').value||null;
+  if(!fecha){toast('La fecha es obligatoria','error');return;}
+  if(importe<=0){toast('El importe debe ser mayor a cero','error');return;}
+  const cfg=await DB.cfg(eid);
+  const nums=getNums(cfg);
+  const numPag=nums.PS||1;
+  const numero='PS-'+String(numPag).padStart(5,'0');
+  await DB.setCfg(eid,{...cfg,nums:{...nums,PS:numPag+1}});
+  const pago={
+    id:genId(),empleadoId,liquidacionId:liqId,numero,fecha,importe,
+    formaPagoId,cajaId,observaciones:document.getElementById('pago-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()
+  };
+  await DB.upsertItem(eid,'pagos_sueldo',pago);
+  DB._clearCache(eid,'pagos_sueldo');
+  // Marcar liquidación como pagada si saldo cubre el total
+  if(liqId){
+    const liqs=await DB.getE(eid,'liquidaciones_sueldo');
+    const liq=liqs.find(l=>l.id===liqId);
+    if(liq){
+      const pagsLiq=(await DB.getE(eid,'pagos_sueldo')).filter(p=>p.liquidacionId===liqId);
+      const totalPagado=pagsLiq.reduce((s,p)=>s+p.importe,0);
+      if(totalPagado>=liq.total){
+        await DB.upsertItem(eid,'liquidaciones_sueldo',{...liq,estado:'pagada'});
+        DB._clearCache(eid,'liquidaciones_sueldo');
+      }
+    }
+  }
+  closeModal();toast('Pago '+numero+' registrado ✓','success');
+  await verCCEmpleado(empleadoId);
+}
+
+async function eliminarPagoSueldo(pagoId,empleadoId){
+  confirm('Eliminar pago','¿Eliminar este pago de sueldo? Esta acción no se puede deshacer.',async()=>{
+    const eid=_empresa.id;
+    const pags=await DB.getE(eid,'pagos_sueldo');
+    const pago=pags.find(p=>p.id===pagoId);
+    if(pago&&pago.liquidacionId){
+      // Revertir estado de la liquidación a pendiente
+      const liqs=await DB.getE(eid,'liquidaciones_sueldo');
+      const liq=liqs.find(l=>l.id===pago.liquidacionId);
+      if(liq&&liq.estado==='pagada'){
+        await DB.upsertItem(eid,'liquidaciones_sueldo',{...liq,estado:'pendiente'});
+        DB._clearCache(eid,'liquidaciones_sueldo');
+      }
+    }
+    await DB.deleteItem(eid,'pagos_sueldo',pagoId);
+    DB._clearCache(eid,'pagos_sueldo');
+    toast('Pago eliminado','success');
+    await verCCEmpleado(empleadoId);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════
 // USUARIOS
 // ═══════════════════════════════════════════════════════════
 async function renderUsuarios(){
@@ -2148,7 +2503,7 @@ function exportarAbonosExcel(){
     // Armar filas: una fila por línea de abono
     const rows=[];
     clientes.forEach(cl=>{
-      const abs=getAbonos(cl);
+      const abs=(cl.abonos&&cl.abonos.length)?cl.abonos:(cl.serviciosHabituales||[]);
       abs.forEach((a,i)=>{
         rows.push({
           Cliente:cl.nombre,
@@ -3182,11 +3537,14 @@ async function renderInformeEconomico(c,filtros){
   const clientes=await DB.getE(eid,'clientes');
   const provs=await DB.getE(eid,'proveedores');
   const rubros=await DB.getE(eid,'rubros');
+  var liqs=[];try{liqs=(await DB.getE(eid,'liquidaciones_sueldo')).filter(l=>l.fecha>=_infDesde&&l.fecha<=_infHasta);}catch(e){}
+  var emps=[];try{emps=await DB.getE(eid,'empleados');}catch(e){}
 
   const totalVentas=fv.reduce((s,f)=>s+f.total,0);
   const totalCobrado=fv.filter(f=>f.estado==='cobrada').reduce((s,f)=>s+f.total,0);
   const totalCompras=fc.reduce((s,f)=>s+f.total,0);
-  const resultado=totalVentas-totalCompras;
+  const totalSueldos=liqs.reduce((s,l)=>s+l.total,0);
+  const resultado=totalVentas-totalCompras-totalSueldos;
 
   const rubroTotals={};
   fc.forEach(f=>(f.lineas||[]).forEach(l=>{if(l.rubro)rubroTotals[l.rubro]=(rubroTotals[l.rubro]||0)+(l.cantidad*l.precio)}));
@@ -3196,8 +3554,9 @@ async function renderInformeEconomico(c,filtros){
     <div class="card mb20">
       <h3 class="fw6 mb12" style="font-size:14px">Resultado económico del período</h3>
       <div style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">
-        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Ventas devengadas</span><span style="font-family:var(--mono);font-weight:600;color:var(--text)">${fmtARS(totalVentas)}</span></div>
-        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Compras y Gastos devengados</span><span style="font-family:var(--mono);font-weight:600;color:var(--text)">${fmtARS(totalCompras)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Ventas devengadas</span><span style="font-family:var(--mono);font-weight:600;color:var(--green)">${fmtARS(totalVentas)}</span></div>
+        <div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Compras y Gastos devengados</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">${fmtARS(totalCompras)}</span></div>
+        ${totalSueldos>0?`<div style="display:flex;justify-content:space-between;padding:10px 14px;border-bottom:1px solid var(--border)"><span style="font-size:13px">Total Sueldos liquidados</span><span style="font-family:var(--mono);font-weight:600;color:var(--red)">${fmtARS(totalSueldos)}</span></div>`:''}
         <div style="display:flex;justify-content:space-between;padding:12px 14px;background:var(--surface2)"><span style="font-size:14px;font-weight:700">RESULTADO BRUTO</span><span style="font-family:var(--mono);font-weight:700;font-size:15px;color:${resultado>=0?'var(--green)':'var(--red)'}">${fmtARS(resultado)}</span></div>
       </div>
     </div>
@@ -3237,7 +3596,23 @@ async function renderInformeEconomico(c,filtros){
           :`<p class="text-muted" style="font-size:13px">Sin compras en el período</p>`}
         </div>
       </div>
-    </div>`;
+    </div>
+    ${liqs.length>0?`
+    <div class="card mt20">
+      <h3 class="fw6 mb12" style="font-size:14px">Sueldos liquidados del período <span class="badge badge-blue" style="margin-left:8px">${liqs.length}</span></h3>
+      <div class="tw"><table><thead><tr><th>N°</th><th>Empleado</th><th>Período</th><th class="td-r">Sueldo</th><th class="td-r">Comisión</th><th class="td-r">Total</th><th>Estado</th></tr></thead>
+      <tbody>${liqs.map(l=>{const emp=emps.find(e=>e.id===l.empleadoId);return`<tr>
+        <td class="td-mono">${esc(l.numero)}</td>
+        <td>${emp?esc(emp.nombre):'—'}</td>
+        <td class="td-mono">${esc(l.periodo)}</td>
+        <td class="td-mono td-r">${fmtARS(l.sueldo||0)}</td>
+        <td class="td-mono td-r">${fmtARS(l.comision||0)}</td>
+        <td class="td-mono td-r" style="font-weight:600">${fmtARS(l.total)}</td>
+        <td><span class="badge ${l.estado==='pagada'?'badge-green':'badge-yellow'}">${l.estado==='pagada'?'Pagado':'Pendiente'}</span></td>
+      </tr>`}).join('')}
+      <tr><td colspan="5" style="font-weight:700;text-align:right;padding-top:10px">Total sueldos</td><td class="td-mono td-r" style="font-weight:700;color:var(--red)">${fmtARS(totalSueldos)}</td><td></td></tr>
+      </tbody></table></div>
+    </div>`:''}`;
 }
 
 async function renderInformeFinanciero(c,filtros){
@@ -3249,12 +3624,15 @@ async function renderInformeFinanciero(c,filtros){
   const fps=await DB.getE(eid,'formas_pago');
   const clientes=await DB.getE(eid,'clientes');
   const provs=await DB.getE(eid,'proveedores');
+  var empsF=[];try{empsF=await DB.getE(eid,'empleados');}catch(e){}
+  var pagosSueldo=[];try{pagosSueldo=await DB.getE(eid,'pagos_sueldo');}catch(e){}
 
   const movs=[];
   recCob.filter(r=>r.fecha>=_infDesde&&r.fecha<=_infHasta).forEach(r=>{const cl=clientes.find(x=>x.id===r.clienteId);movs.push({fecha:r.fecha,tipo:'Cobro',desc:'Cobro cliente'+(cl?' · '+cl.nombre:''),numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId});});
   fvCob.filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta).forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);movs.push({fecha:f.fecha,tipo:'Cobro',desc:'Venta contado'+(cl?' · '+cl.nombre:''),numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId});});
   ordPago.filter(o=>o.fecha>=_infDesde&&o.fecha<=_infHasta).forEach(o=>{const pv=provs.find(x=>x.id===o.proveedorId);movs.push({fecha:o.fecha,tipo:'Pago',desc:'Pago proveedor'+(pv?' · '+pv.nombre:''),numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId});});
   fcPag.filter(f=>f.fecha>=_infDesde&&f.fecha<=_infHasta).forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);movs.push({fecha:f.fecha,tipo:'Pago',desc:'Compra contado'+(pv?' · '+pv.nombre:''),numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId});});
+  pagosSueldo.filter(p=>p.fecha>=_infDesde&&p.fecha<=_infHasta).forEach(p=>{const emp=empsF.find(e=>e.id===p.empleadoId);movs.push({fecha:p.fecha,tipo:'Pago sueldo',desc:'Pago sueldo'+(emp?' · '+emp.nombre:''),numero:p.numero,importe:p.importe,dir:'out',fpId:p.formaPagoId});});
   movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
 
   const totalIn=movs.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
