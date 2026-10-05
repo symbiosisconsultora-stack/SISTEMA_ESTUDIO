@@ -1748,7 +1748,7 @@ function openEmpleadoModal(id){
       <div class="fc"><label class="lbl">Nombre completo *</label><input id="emp-nombre" class="inp" placeholder="Juan Pérez"></div>
       <div class="fc"><label class="lbl">DNI</label><input id="emp-dni" class="inp" placeholder="12345678" maxlength="20"></div>
     </div>
-  `,[{lbl:'Guardar',cls:'btn-primary',fn:saveEmpleado}]);
+  `,[{lbl:'Guardar',cls:'btn-primary',fn:'saveEmpleado()'}]);
   setTimeout(()=>document.getElementById('emp-nombre').focus(),50);
 }
 
@@ -1819,7 +1819,7 @@ async function openLiqModal(empleadoId){
       <input type="hidden" id="liq-total" value="0">
     </div>
     <div class="fc mt8"><label class="lbl">Observaciones</label><textarea id="liq-obs" class="inp" rows="2" placeholder="Opcional"></textarea></div>
-  `,[{lbl:'Guardar liquidación',cls:'btn-primary',fn:saveLiquidacion}]);
+  `,[{lbl:'Guardar liquidación',cls:'btn-primary',fn:'saveLiquidacion()'}]);
   setTimeout(()=>document.getElementById('liq-sueldo').focus(),50);
 }
 
@@ -1966,7 +1966,7 @@ async function openPagoSueldoModal(liqId,empleadoId){
       </div>
     </div>
     <div class="fc mt8"><label class="lbl">Observaciones</label><textarea id="pago-obs" class="inp" rows="2" placeholder="Opcional"></textarea></div>
-  `,[{lbl:'Registrar pago',cls:'btn-primary',fn:savePagoSueldo}]);
+  `,[{lbl:'Registrar pago',cls:'btn-primary',fn:'savePagoSueldo()'}]);
   setTimeout(()=>document.getElementById('pago-importe').focus(),50);
 }
 
