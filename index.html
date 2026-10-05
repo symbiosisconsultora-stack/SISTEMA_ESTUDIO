@@ -2695,10 +2695,13 @@ async function ejecutarFacMasiva(){
     async()=>{
       const clientes=(await DB.getE(eid,'clientes')).filter(x=>selected.includes(x.id));
       const nums=getNums(cfg);
-      let fvs=await DB.getE(eid,'facturas_venta');
+      // Siempre leer facturas frescas desde Supabase para evitar cache desactualizado
+      DB._clearCache(eid,'facturas_venta');
+      const fvs=await DB.getE(eid,'facturas_venta');
       // Clientes que ya tienen factura de abono para este mes → saltear
       const yaFacturadosEsMes=new Set(fvs.filter(f=>f.loteAbonos&&f.fecha&&f.fecha.startsWith(mesFecha)).map(f=>f.clienteId));
       const loteId=genId(); // ID de lote para poder deshacer
+      const nuevasFacs=[];
       let count=0;
       let saltados=0;
       clientes.forEach(cl=>{
@@ -2708,7 +2711,7 @@ async function ejecutarFacMasiva(){
         const lineas=_abs.map(s=>({id:genId(),desc:s.descripcion,cantidad:s.cantidad,precio:s.precio}));
         const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
         const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;nums.FAC++;count++;
-        fvs.push({id:genId(),numero,fecha,clienteId:cl.id,tipo:cl.condicionCobro,
+        nuevasFacs.push({id:genId(),numero,fecha,clienteId:cl.id,tipo:cl.condicionCobro,
           vencimiento:cl.condicionCobro==='cc'?addDays(fecha,cl.diasVenc||30):null,
           total,lineas,estado:cl.condicionCobro==='contado'?'cobrada':'pendiente',
           loteAbonos:loteId,
@@ -2717,7 +2720,11 @@ async function ejecutarFacMasiva(){
       if(!count){hideLoading();toast('No hay clientes nuevos para generar en '+mesFecha+' (todos ya tienen abono facturado ese mes)','info');return;}
       showLoading('Generando facturas...');
       await DB.setCfg(eid,{...cfg,nums});
-      await DB.setE(eid,'facturas_venta',fvs);
+      // Insertar solo las facturas nuevas — nunca tocar las existentes
+      for(const fac of nuevasFacs){
+        await DB.upsertItem(eid,'facturas_venta',fac);
+      }
+      DB._clearCache(eid,'facturas_venta');
       hideLoading();
       const saltMsg=saltados?` (${saltados} ya ten${saltados===1?'ía':'ían'} factura ese mes)`:'';
       toast(`${count} factura${count!==1?'s':''} generada${count!==1?'s':''}${saltMsg}  ✓`,'success');
@@ -2755,9 +2762,10 @@ async function deshacerFacMasiva(){
     `Se eliminarán ${facsLote.length} factura${facsLote!==1?'s':''} del lote generado el ${fechaLote}. Esta acción no se puede deshacer.`,
     async()=>{
       showLoading('Deshaciendo...');
-      const idsLote=new Set(facsLote.map(f=>f.id));
-      const fvsRestantes=fvs.filter(f=>!idsLote.has(f.id));
-      await DB.setE(eid,'facturas_venta',fvsRestantes);
+      for(const f of facsLote){
+        await DB.deleteItem(eid,'facturas_venta',f.id);
+      }
+      DB._clearCache(eid,'facturas_venta');
       hideLoading();
       toast(`${facsLote.length} factura${facsLote.length!==1?'s':''} eliminada${facsLote.length!==1?'s':''}`,'success');
       navTo('facturacion-masiva');
