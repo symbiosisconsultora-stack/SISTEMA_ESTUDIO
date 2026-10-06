@@ -480,8 +480,8 @@ const FIELD_TO_DB = {
   cajas:           {},
   facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion', loteAbonos:'lote_abonos' },
   facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
-  recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
-  ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', facturaIds:'factura_ids', fechaCreacion:'fecha_creacion' },
+  recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
+  ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
   notas_credito:        { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
   empleados:            { fechaAlta:'fecha_alta' },
   liquidaciones_sueldo: { empleadoId:'empleado_id', fechaCreacion:'fecha_creacion' },
@@ -2489,8 +2489,8 @@ async function saveReciboRapido(facId){
     comprobantesAplicados:[{id:facId,tipo:'fv',numero:fac.numero,importeAplicado:importe}],
     observaciones:document.getElementById('rc-obs').value.trim(),
     fechaCreacion:new Date().toISOString()};
-  const recibos=await DB.getE(eid,'recibos_cobro');recibos.push(recibo);
-  await DB.setE(eid,'recibos_cobro',recibos);
+  await DB.upsertItem(eid,'recibos_cobro',recibo);
+  DB._clearCache(eid,'recibos_cobro');
   // marcar factura cobrada
   const facToMark=await DB.getE(eid,'facturas_venta').then(fvs=>fvs.find(f=>f.id===facId));
   if(facToMark){await DB.upsertItem(eid,'facturas_venta',{...facToMark,estado:'cobrada',fechaCobro:recibo.fecha});DB._clearCache(eid,'facturas_venta');}
