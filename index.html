@@ -756,20 +756,14 @@ const DB = {
 
   async findUsuario(eid, usuario, pwd) {
     try {
-      // Busca el usuario en la empresa actual O en cualquier empresa (para multi-empresa)
+      // Filtra directamente por empresa_id (columna real en Supabase)
       const r = await fetch(
-        `${SB_URL}/rest/v1/usuarios?usuario=eq.${encodeURIComponent(usuario)}&pwd=eq.${encodeURIComponent(pwd)}&activo=eq.true&select=*`,
+        `${SB_URL}/rest/v1/usuarios?empresa_id=eq.${encodeURIComponent(eid)}&usuario=eq.${encodeURIComponent(usuario)}&pwd=eq.${encodeURIComponent(pwd)}&activo=eq.true&select=*`,
         { headers: sbHeaders() }
       );
       const data = await r.json();
       if (!Array.isArray(data) || !data.length) return null;
-      // Buscar el que tenga esta empresa habilitada
-      for (const row of data) {
-        const u = fromDB('usuarios', row);
-        const ids = Array.isArray(u.empresasIds) ? u.empresasIds : (u.empresaId ? [u.empresaId] : []);
-        if (u.empresaId === eid || ids.includes(eid)) return u;
-      }
-      return null;
+      return fromDB('usuarios', data[0]);
     } catch { return null; }
   },
 };
