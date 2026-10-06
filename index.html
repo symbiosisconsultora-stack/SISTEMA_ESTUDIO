@@ -486,7 +486,20 @@ const FIELD_TO_DB = {
   empleados:            { fechaAlta:'fecha_alta' },
   liquidaciones_sueldo: { empleadoId:'empleado_id', fechaCreacion:'fecha_creacion' },
   pagos_sueldo:         { empleadoId:'empleado_id', liquidacionId:'liquidacion_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', fechaCreacion:'fecha_creacion' },
-  usuarios:             { empresaId:'empresa_id', empresasIds:'empresas_ids' },
+  usuarios:             {},
+};
+// Columnas permitidas por tabla (whitelist exacta de Supabase — campos no listados se descartan antes del envío)
+const TABLE_COLS = {
+  usuarios:        new Set(['id','empresa_id','nombre','usuario','pwd','rol','activo']),
+  clientes:        new Set(['id','empresa_id','codigo','nombre','cuit','condicion_iva','email','telefono','direccion','condicion_cobro','dias_venc','observaciones','servicios_habituales','activo','abonos']),
+  proveedores:     new Set(['id','empresa_id','codigo','nombre','cuit','rubro_id','email','telefono','direccion','condicion_pago','dias_venc','observaciones','activo']),
+  facturas_venta:  new Set(['id','empresa_id','numero','fecha','cliente_id','tipo','total','lineas','vencimiento','forma_pago_id','observaciones','estado','fecha_cobro','fecha_creacion','lote_abonos']),
+  facturas_compra: new Set(['id','empresa_id','numero','n_fp','fecha','proveedor_id','tipo','rubro_id','total','lineas','vencimiento','forma_pago_id','observaciones','estado','fecha_pago','fecha_creacion']),
+  recibos_cobro:   new Set(['id','empresa_id','numero','fecha','cliente_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
+  ordenes_pago:    new Set(['id','empresa_id','numero','fecha','proveedor_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
+  empleados:       new Set(['id','empresa_id','nombre','dni','activo','fecha_alta']),
+  liquidaciones_sueldo: new Set(['id','empresa_id','empleado_id','numero','periodo','fecha','sueldo','comision','total','estado','observaciones','fecha_creacion']),
+  pagos_sueldo:    new Set(['id','empresa_id','empleado_id','liquidacion_id','numero','fecha','importe','forma_pago_id','caja_id','observaciones','fecha_creacion']),
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
@@ -496,10 +509,11 @@ Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
 
 function toDB(tbl, obj) {
   const map = FIELD_TO_DB[tbl] || {};
+  const allowed = TABLE_COLS[tbl]; // whitelist de columnas Supabase; undefined = sin filtro
   const out = {};
   Object.entries(obj).forEach(([k, v]) => {
     const dbKey = map[k] || k;
-    out[dbKey] = v;
+    if (!allowed || allowed.has(dbKey)) out[dbKey] = v;
   });
   // empresa_id siempre presente para tablas que lo necesitan
   if (_empresa && TABLE_MAP[tbl] && tbl !== 'empresas') out.empresa_id = _empresa.id;
