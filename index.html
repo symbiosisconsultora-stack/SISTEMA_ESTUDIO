@@ -1299,8 +1299,13 @@ async function renderDashboard(c){
     return d.toISOString().slice(0,10);
   }
   // Calcular por cliente igual que calcCC: débito CC - créditos (recibos + NC) = saldo neto
+  // Incluir cualquier cliente con facturas cc o recibos, igual que renderCCClientes
   let pendVencido=0,pendNoVencido=0;
-  const clientesCcActivos=clientes.filter(cl2=>cl2.condicionCobro==='cc');
+  const clientesCcActivos=clientes.filter(cl2=>
+    cl2.condicionCobro==='cc'
+    ||fv.some(f=>f.clienteId===cl2.id&&f.tipo==='cc')
+    ||recibos.some(r=>r.clienteId===cl2.id)
+  );
   for(const cl2 of clientesCcActivos){
     const fvsCl=fv.filter(f=>f.clienteId===cl2.id&&f.tipo==='cc');
     const recsCl=recibos.filter(r=>r.clienteId===cl2.id);
