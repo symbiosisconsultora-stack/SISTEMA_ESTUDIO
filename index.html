@@ -1315,14 +1315,19 @@ async function renderDashboard(c){
     const saldoCl=debito-credito;
     if(saldoCl<=0)continue;
     // Distribuir saldo neto entre fv pendientes por vencimiento
+    // Descontar de cada factura lo ya imputado parcialmente en recibos
     const fvsPend=fvsCl.filter(f=>f.estado!=='cobrada').sort((a,b)=>getFechaVencFV(a)<getFechaVencFV(b)?-1:1);
     let resto=saldoCl;
     for(const f of fvsPend){
       if(resto<=0)break;
-      const aplicado=Math.min(f.total,resto);
-      if(getFechaVencFV(f)<hoy)pendVencido+=aplicado;
-      else pendNoVencido+=aplicado;
-      resto-=aplicado;
+      const yaImputado=recsCl.reduce((s,r)=>(s+(r.comprobantesAplicados||[]).filter(c=>c.id===f.id).reduce((a,c)=>a+c.importeAplicado,0)),0);
+      const saldoFv=Math.max(0,f.total-yaImputado);
+      const aplicado=Math.min(saldoFv,resto);
+      if(aplicado>0.001){
+        if(getFechaVencFV(f)<hoy)pendVencido+=aplicado;
+        else pendNoVencido+=aplicado;
+        resto-=aplicado;
+      }
     }
   }
   const pendCobro=pendVencido+pendNoVencido;
@@ -2744,9 +2749,9 @@ async function saveReciboRapido(facId){
     fechaCreacion:new Date().toISOString()};
   await DB.upsertItem(eid,'recibos_cobro',recibo);
   DB._clearCache(eid,'recibos_cobro');
-  // marcar factura cobrada
+  // marcar factura cobrada solo si el importe cubre el total
   const facToMark=await DB.getE(eid,'facturas_venta').then(fvs=>fvs.find(f=>f.id===facId));
-  if(facToMark){await DB.upsertItem(eid,'facturas_venta',{...facToMark,estado:'cobrada',fechaCobro:recibo.fecha});DB._clearCache(eid,'facturas_venta');}
+  if(facToMark&&importe>=facToMark.total-0.001){await DB.upsertItem(eid,'facturas_venta',{...facToMark,estado:'cobrada',fechaCobro:recibo.fecha});DB._clearCache(eid,'facturas_venta');}
   closeModal();toast(`Cobro registrado · ${numero}`,'success');renderVentas();
 }
 
@@ -3509,13 +3514,17 @@ async function saveCobroDirecto(){
     fechaCreacion:new Date().toISOString()};
   showLoading('Registrando cobro...');
   await DB.upsertItem(eid,'recibos_cobro',rec);
-  // Marcar como cobradas las facturas de venta aplicadas
+  // Marcar como cobradas las facturas de venta aplicadas solo si el importe cubre el total
   const fvsAll=await DB.getE(eid,'facturas_venta');
+  const recsAllUpd=await DB.getE(eid,'recibos_cobro');
   for(const comp of compsAplicados){
     if(comp.tipo==='fv'){
       const fv=fvsAll.find(f=>f.id===comp.id);
       if(fv&&fv.estado!=='cobrada'){
-        await DB.upsertItem(eid,'facturas_venta',{...fv,estado:'cobrada',fechaCobro:rec.fecha});
+        const totalImputado=recsAllUpd.reduce((s,r)=>(s+(r.comprobantesAplicados||[]).filter(c=>c.id===fv.id).reduce((a,c)=>a+c.importeAplicado,0)),0);
+        if(totalImputado>=fv.total-0.001){
+          await DB.upsertItem(eid,'facturas_venta',{...fv,estado:'cobrada',fechaCobro:rec.fecha});
+        }
       }
     }
   }
