@@ -493,8 +493,8 @@ const TABLE_COLS = {
   usuarios:        new Set(['id','empresa_id','nombre','usuario','pwd','rol','activo']),
   clientes:        new Set(['id','empresa_id','codigo','nombre','cuit','condicion_iva','email','telefono','direccion','condicion_cobro','dias_venc','observaciones','servicios_habituales','activo','abonos']),
   proveedores:     new Set(['id','empresa_id','codigo','nombre','cuit','rubro_id','email','telefono','direccion','condicion_pago','dias_venc','observaciones','activo']),
-  facturas_venta:  new Set(['id','empresa_id','numero','fecha','cliente_id','tipo','total','lineas','vencimiento','forma_pago_id','observaciones','estado','fecha_cobro','fecha_creacion','lote_abonos']),
-  facturas_compra: new Set(['id','empresa_id','numero','n_fp','fecha','proveedor_id','tipo','rubro_id','total','lineas','vencimiento','forma_pago_id','observaciones','estado','fecha_pago','fecha_creacion']),
+  facturas_venta:  new Set(['id','empresa_id','numero','fecha','cliente_id','tipo','total','lineas','vencimiento','forma_pago_id','caja_id','banco_id','observaciones','estado','fecha_cobro','fecha_creacion','lote_abonos']),
+  facturas_compra: new Set(['id','empresa_id','numero','n_fp','fecha','proveedor_id','tipo','rubro_id','total','lineas','vencimiento','forma_pago_id','caja_id','banco_id','observaciones','estado','fecha_pago','fecha_creacion']),
   recibos_cobro:   new Set(['id','empresa_id','numero','fecha','cliente_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
   ordenes_pago:    new Set(['id','empresa_id','numero','fecha','proveedor_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
   empleados:       new Set(['id','empresa_id','nombre','dni','activo','fecha_alta']),
@@ -2832,6 +2832,8 @@ async function openFCModal(){
   const provs=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
   const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
   const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
+  const bancos=(await DB.getE(eid,'bancos')||[]).filter(x=>x.activo);
+  const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
   _fcLineas=[{id:genId(),desc:'',rubro:'',cantidad:1,precio:0}];
@@ -2842,14 +2844,18 @@ async function openFCModal(){
     </div>
     <div class="row2">
       <div class="fg"><label>Fecha recepción *</label><input id="fc-f" type="date" value="${today()}"></div>
-      <div class="fg"><label>Proveedor *</label><select id="fc-pv" onchange="fcOnProvChange()"><option value="">Seleccioná...</option>${provs.map(p=>`<option value="${p.id}">${esc(p.nombre)}</option>`).join('')}</select></div>
+      <div class="fg"><label>Proveedor *</label><select id="fc-pv" onchange="fcOnProvChange()"><option value="">Seleccioná...</option>${provs.map(p=>`<option value="${p.id}" data-rubro="${p.rubroId||''}">${esc(p.nombre)}</option>`).join('')}</select></div>
     </div>
     <div class="row2">
       <div class="fg"><label>Tipo</label><select id="fc-tipo" onchange="fcOnTipoChange()"><option value="cc">Cuenta Corriente</option><option value="contado">Contado</option></select></div>
       <div class="fg"><label>Rubro general</label><select id="fc-rub"><option value="">Sin rubro</option>${rubros.map(r=>`<option value="${r.id}">${esc(r.nombre)}</option>`).join('')}</select></div>
     </div>
     <div id="fc-venc-row" class="fg"><label>Fecha de vencimiento</label><input id="fc-venc" type="date" value="${addDays(today(),30)}"></div>
-    <div id="fc-fp-row" class="fg" style="display:none"><label>Forma de pago</label><select id="fc-fp"><option value="">Seleccioná...</option>${fps.map(fp=>`<option value="${fp.id}">${esc(fp.nombre)}</option>`).join('')}</select></div>
+    <div id="fc-fp-row" style="display:none">
+      <div class="fg"><label>Forma de pago</label><select id="fc-fp" onchange="fpOnChange('${eid}',this.value,null,null,'fc-bk-cont','fc-cj-cont')"><option value="">Seleccioná...</option>${fps.map(fp=>`<option value="${fp.id}" data-tipo="${fp.tipo||''}">${esc(fp.nombre)}</option>`).join('')}</select></div>
+      <div id="fc-bk-cont" style="display:none"><div class="fg"><label>Banco *</label><select id="fc-bk"><option value="">Seleccioná banco...</option>${bancos.map(b=>`<option value="${b.id}">${esc(b.nombre)}</option>`).join('')}</select></div></div>
+      <div id="fc-cj-cont" style="display:none"><div class="fg"><label>Caja *</label><select id="fc-cj"><option value="">Seleccioná caja...</option>${cajas.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}</select></div></div>
+    </div>
     <div class="divider"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <strong style="font-size:13px">Detalle</strong>
@@ -2875,7 +2881,13 @@ async function fcOnProvChange(){
   const pid=document.getElementById('fc-pv').value;
   const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===pid);
   if(pv){
+    // Precargar rubro general
     if(pv.rubroId)document.getElementById('fc-rub').value=pv.rubroId;
+    // Precargar rubro en primera línea de detalle
+    if(pv.rubroId&&_fcLineas.length>0){
+      _fcLineas[0].rubro=pv.rubroId;
+      fcRenderLineas();
+    }
     if(document.getElementById('fc-tipo').value==='cc')
       document.getElementById('fc-venc').value=addDays(document.getElementById('fc-f').value,pv.diasVenc||30);
   }
@@ -2929,6 +2941,22 @@ async function saveFC(){
   if(!lineas.length){toast('Agregá al menos una línea','error');return}
   const _fechaFC=document.getElementById('fc-f').value;
   if(await isMesCerrado(_fechaFC)){toast('El período '+_fechaFC.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
+  // Validar forma de pago, caja/banco para contado
+  let formaPagoId=null,cajaId=null,bancoId=null;
+  if(tipo==='contado'){
+    formaPagoId=document.getElementById('fc-fp').value;
+    if(!formaPagoId){toast('Seleccioná una forma de pago','error');return}
+    const fps=await DB.getE(eid,'formas_pago');
+    const fp=fps.find(x=>x.id===formaPagoId);
+    if(fp&&FP_TIPO_BANCO.includes(fp.tipo)){
+      bancoId=document.getElementById('fc-bk')?.value||'';
+      if(!bancoId){toast('Seleccioná el banco para esta forma de pago','error');return}
+    }
+    if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){
+      cajaId=document.getElementById('fc-cj')?.value||'';
+      if(!cajaId){toast('Seleccioná la caja para esta forma de pago','error');return}
+    }
+  }
   const total=lineas.reduce((s,l)=>s+(l.cantidad*l.precio),0);
   const cfg=await DB.cfg(eid);const nums=cfg.nums||{CMP:1};
   const numero=`CMP-${String(nums.CMP).padStart(5,'0')}`;
@@ -2937,7 +2965,7 @@ async function saveFC(){
     fecha:document.getElementById('fc-f').value,proveedorId,tipo,
     rubroId:document.getElementById('fc-rub').value,total,lineas,
     vencimiento:tipo==='cc'?document.getElementById('fc-venc').value:null,
-    formaPagoId:tipo==='contado'?document.getElementById('fc-fp').value:null,
+    formaPagoId,cajaId,bancoId,
     observaciones:document.getElementById('fc-obs').value.trim(),
     estado:tipo==='contado'?'pagada':'pendiente',fechaCreacion:new Date().toISOString()};
   showLoading('Guardando factura...');
@@ -3062,7 +3090,7 @@ async function renderTesoreria(){
   recCob.forEach(r=>movs.push({id:r.id,fecha:r.fecha,tipo:'Cobro',subtipo:'Cobro cliente',numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId,bancoId:r.bancoId||'',cajaId:r.cajaId||'',ref:r.clienteId,entidad:clientes.find(x=>x.id===r.clienteId),imprimible:'recibo',tabla:'recibos_cobro'}));
   fvCob.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Cobro',subtipo:'Venta contado',numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:'',ref:f.clienteId,entidad:clientes.find(x=>x.id===f.clienteId),imprimible:'fv',tabla:'facturas_venta'}));
   ordPago.forEach(o=>movs.push({id:o.id,fecha:o.fecha,tipo:'Pago',subtipo:'Pago proveedor',numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId,bancoId:o.bancoId||'',cajaId:o.cajaId||'',ref:o.proveedorId,entidad:proveedores.find(x=>x.id===o.proveedorId),tabla:'ordenes_pago'}));
-  fcPag.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Pago',subtipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:'',ref:f.proveedorId,entidad:proveedores.find(x=>x.id===f.proveedorId),tabla:'facturas_compra'}));
+  fcPag.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Pago',subtipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:f.cajaId||'',ref:f.proveedorId,entidad:proveedores.find(x=>x.id===f.proveedorId),tabla:'facturas_compra'}));
   movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
 
   // Aplicar filtros
