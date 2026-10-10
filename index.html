@@ -1287,8 +1287,9 @@ async function renderDashboard(c){
   const fv=await DB.getE(eid,'facturas_venta');
   const fc=await DB.getE(eid,'facturas_compra');
   const hoy=today();
-  // Pendientes CC: calcular vencido vs no vencido
-  const fvPend=fv.filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
+  // Pendientes CC: misma lógica que calcCC en cuentas corrientes (saldo neto = FV - recibos - NC)
+  const recibos=await DB.getE(eid,'recibos_cobro');
+  let ncsVenta=[];try{ncsVenta=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='venta');}catch(e){}
   function getFechaVencFV(f){
     if(f.fechaVenc)return f.fechaVenc;
     const cl2=clientes.find(c2=>c2.id===f.clienteId);
@@ -1297,8 +1298,28 @@ async function renderDashboard(c){
     const d=new Date(f.fecha);d.setDate(d.getDate()+dias);
     return d.toISOString().slice(0,10);
   }
-  const pendVencido=fvPend.filter(f=>getFechaVencFV(f)<hoy).reduce((s,f)=>s+f.total,0);
-  const pendNoVencido=fvPend.filter(f=>getFechaVencFV(f)>=hoy).reduce((s,f)=>s+f.total,0);
+  // Calcular por cliente igual que calcCC: débito CC - créditos (recibos + NC) = saldo neto
+  let pendVencido=0,pendNoVencido=0;
+  const clientesCcActivos=clientes.filter(cl2=>cl2.condicionCobro==='cc');
+  for(const cl2 of clientesCcActivos){
+    const fvsCl=fv.filter(f=>f.clienteId===cl2.id&&f.tipo==='cc');
+    const recsCl=recibos.filter(r=>r.clienteId===cl2.id);
+    const ncsCl=ncsVenta.filter(n=>n.clienteId===cl2.id);
+    const debito=fvsCl.reduce((s,f)=>s+f.total,0);
+    const credito=recsCl.reduce((s,r)=>s+r.importe,0)+ncsCl.reduce((s,n)=>s+n.importe,0);
+    const saldoCl=debito-credito;
+    if(saldoCl<=0)continue;
+    // Distribuir saldo neto entre fv pendientes por vencimiento
+    const fvsPend=fvsCl.filter(f=>f.estado!=='cobrada').sort((a,b)=>getFechaVencFV(a)<getFechaVencFV(b)?-1:1);
+    let resto=saldoCl;
+    for(const f of fvsPend){
+      if(resto<=0)break;
+      const aplicado=Math.min(f.total,resto);
+      if(getFechaVencFV(f)<hoy)pendVencido+=aplicado;
+      else pendNoVencido+=aplicado;
+      resto-=aplicado;
+    }
+  }
   const pendCobro=pendVencido+pendNoVencido;
   const pendPago=fc.filter(f=>f.tipo==='cc'&&f.estado!=='pagada').reduce((s,f)=>s+f.total,0);
   const mes=today().slice(0,7)+'-01';
@@ -4090,7 +4111,7 @@ async function renderInformeFinanciero(c,filtros){
 // ═══════════════════════════════════════════════════════════
 var _ccQ='';
 var _ccDesde='',_ccHasta='';
-var _ccSoloDeudor=false,_ccSoloAcreedor=false,_ccOcultarSinSaldo=false,_ccOcultarSinMovs=false;
+var _ccSoloDeudor=false,_ccSoloAcreedor=false,_ccOcultarSinSaldo=false,_ccOcultarSinMovs=false,_ccSoloSinAplicar=false;
 async function renderCCClientes(){
   const _fSnap=_captureFocus();
   const eid=_empresa.id;
@@ -4146,7 +4167,12 @@ async function renderCCClientes(){
     if(_ccHasta)fvsPend=fvsPend.filter(f=>f.fecha<=_ccHasta);
     var saldoVencido=fvsPend.filter(f=>fechaVencFV(f)<_hoy).reduce((s,f)=>s+f.total,0);
     var saldoNoVencido=fvsPend.filter(f=>fechaVencFV(f)>=_hoy).reduce((s,f)=>s+f.total,0);
-    return {saldoPrevio,debito,credito,saldo,tieneMovs,saldoVencido,saldoNoVencido};
+    // Recibos con saldo sin aplicar (importe cobrado > lo efectivamente imputado a facturas)
+    var saldoSinAplicar=recs.reduce(function(s,r){
+      var aplicado=(r.comprobantesAplicados||[]).reduce(function(a,c){return a+c.importeAplicado;},0);
+      return s+Math.max(0,r.importe-aplicado);
+    },0);
+    return {saldoPrevio,debito,credito,saldo,tieneMovs,saldoVencido,saldoNoVencido,saldoSinAplicar};
   }
 
   // Aplicar filtros de checkbox
@@ -4156,6 +4182,7 @@ async function renderCCClientes(){
     if(_ccOcultarSinSaldo&&Math.abs(d.saldo)<0.001)return false;
     if(_ccSoloDeudor&&d.saldo<=0)return false;
     if(_ccSoloAcreedor&&d.saldo>=0)return false;
+    if(_ccSoloSinAplicar&&d.saldoSinAplicar<0.001)return false;
     return true;
   });
 
@@ -4210,6 +4237,7 @@ async function renderCCClientes(){
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccSoloAcreedor?'checked':''} onchange="_ccSoloAcreedor=this.checked;if(_ccSoloAcreedor)_ccSoloDeudor=false;renderCCClientes()"> Solo saldo acreedor (a favor)</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccOcultarSinSaldo?'checked':''} onchange="_ccOcultarSinSaldo=this.checked;renderCCClientes()"> Ocultar sin saldo</label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccOcultarSinMovs?'checked':''} onchange="_ccOcultarSinMovs=this.checked;renderCCClientes()"> Ocultar sin movimientos</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccSoloSinAplicar?'checked':''} onchange="_ccSoloSinAplicar=this.checked;renderCCClientes()"> Solo con recibos sin imputar</label>
       </div>
     </div>
     <div class="toolbar mb12" style="padding:0">
