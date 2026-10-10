@@ -3741,23 +3741,48 @@ async function editarMovTesoreria(tabla,id){
     const rec=(await DB.getE(eid,'recibos_cobro')).find(x=>x.id===id);if(!rec)return;
     const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
     var clOpts=clientes.map(function(c){return '<option value="'+c.id+'"'+(rec.clienteId===c.id?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
+    // Build comprobantes aplicados section
+    const fvsAll=await DB.getE(eid,'facturas_venta');
+    const clienteId=rec.clienteId;
+    const compsApl=(rec.comprobantesAplicados||[]);
+    // Facturas del cliente disponibles: pendientes + las ya imputadas en este recibo
+    const fvsCliente=fvsAll.filter(function(f){return f.clienteId===clienteId&&f.tipo==='cc';});
+    const fvsDisp=fvsCliente.filter(function(f){return f.estado!=='cobrada'||compsApl.some(function(c){return c.id===f.id;});});
+    var fvDispOpts=fvsDisp.filter(function(f){return !compsApl.some(function(c){return c.id===f.id;});})
+      .map(function(f){return '<option value="'+f.id+'">'+esc('FV '+f.numero+' — $'+f.total.toLocaleString('es-AR'))+'</option>';}).join('');
+    var addFvHtml=clienteId?('<div style="display:flex;gap:8px;margin-top:6px;align-items:center">'
+      +'<select id="em-fv-add" style="flex:1"><option value="">+ Agregar factura...</option>'+fvDispOpts+'</select>'
+      +'<button onclick="agregarCompApl()" style="background:#27ae60;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px;">Agregar</button>'
+      +'</div>'):'';
     openModal('Editar cobro · '+esc(rec.numero),`
       <div class="fg"><label>Cliente</label><select id="em-cl"><option value="">Sin cliente</option>${clOpts}</select></div>
       <div class="row2">
         <div class="fg"><label>Fecha *</label><input id="em-f" type="date" value="${rec.fecha}"></div>
-        <div class="fg"><label>Importe *</label><input id="em-imp" type="number" step="0.01" value="${rec.importe}"></div>
+        <div class="fg"><label>Importe *</label><input id="em-imp" type="number" step="0.01" value="${rec.importe}" oninput="actualizarResumenApl()"></div>
       </div>
       <div class="fg"><label>Forma de cobro *</label><select id="em-fp" onchange="fpOnChange('${eid}',this.value,null,null,'em-bk-cont','em-cj-cont')">${fpOpts}</select></div>
       <div id="em-bk-cont" style="display:none"><div class="fg"><label>Banco</label><select id="em-bk"><option value="">Seleccioná banco...</option>${bkOpts}</select></div></div>
       <div id="em-cj-cont" style="display:none"><div class="fg"><label>Caja</label><select id="em-cj"><option value="">Seleccioná caja...</option>${cjOpts}</select></div></div>
       <div class="fg"><label>Observaciones</label><textarea id="em-obs" rows="2">${esc(rec.observaciones||'')}</textarea></div>
+      <div class="fg" style="border-top:1px solid #e0e0e0;padding-top:10px;margin-top:4px;">
+        <label style="font-weight:600;margin-bottom:6px;display:block;">Imputación de comprobantes</label>
+        <div id="comp-apl-list"></div>
+        ${addFvHtml}
+        <div id="comp-apl-resumen" style="margin-top:8px;font-size:13px;color:#555;"></div>
+      </div>
     `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Guardar',cls:'btn-primary',fn:'guardarMovTesoreria(\'recibos_cobro\',\''+id+'\')'}]);
+    // Store editable state globally
+    window._editCompsApl=JSON.parse(JSON.stringify(compsApl));
+    window._editRecId=id;
+    window._editFvsAll=fvsAll;
+    window._editClienteId=clienteId;
     setTimeout(()=>{
       const sel=document.getElementById('em-fp');
       if(sel){sel.value=rec.formaPagoId||'';fpOnChange(eid,sel.value,null,null,'em-bk-cont','em-cj-cont');}
       setTimeout(()=>{
         if(rec.bancoId){const bk=document.getElementById('em-bk');if(bk)bk.value=rec.bancoId;}
         if(rec.cajaId){const cj=document.getElementById('em-cj');if(cj)cj.value=rec.cajaId;}
+        renderCompAplList();
       },50);
     },50);
   } else if(tabla==='ordenes_pago'){
@@ -3786,6 +3811,74 @@ async function editarMovTesoreria(tabla,id){
   }
 }
 
+function renderCompAplList(){
+  var list=document.getElementById('comp-apl-list');
+  if(!list)return;
+  var comps=window._editCompsApl||[];
+  if(!comps.length){list.innerHTML='<div style="color:#888;font-size:13px;margin-top:4px;">Sin imputaciones registradas</div>';actualizarResumenApl();return;}
+  var html='<div style="margin-top:4px;">';
+  comps.forEach(function(c,i){
+    var label=c.tipo==='fv'?'FV':'NC';
+    html+='<div class="comp-apl-row" style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">'
+      +'<span style="flex:1;font-size:13px;">'+esc(label+' '+c.numero)+'</span>'
+      +'<input type="number" step="0.01" min="0" class="comp-apl-imp" data-idx="'+i+'" value="'+c.importeAplicado+'" style="width:110px;" oninput="syncCompImp('+i+',this.value);actualizarResumenApl()">'
+      +'<button onclick="quitarCompApl('+i+')" style="background:#e74c3c;color:#fff;border:none;border-radius:4px;padding:2px 7px;cursor:pointer;font-size:13px;">✕</button>'
+      +'</div>';
+  });
+  html+='</div>';
+  list.innerHTML=html;
+  actualizarResumenApl();
+}
+function syncCompImp(idx,val){
+  if(window._editCompsApl&&window._editCompsApl[idx]!==undefined){
+    window._editCompsApl[idx].importeAplicado=parseFloat(val)||0;
+  }
+}
+function quitarCompApl(idx){
+  if(!window._editCompsApl)return;
+  window._editCompsApl.splice(idx,1);
+  // Refresh add-factura select to show removed factura again
+  var fvsAll=window._editFvsAll||[];
+  var clienteId=window._editClienteId;
+  var comps=window._editCompsApl;
+  var fvsDisp=fvsAll.filter(function(f){return f.clienteId===clienteId&&f.tipo==='cc'&&(f.estado!=='cobrada'||comps.some(function(c){return c.id===f.id;}));});
+  var fvDispOpts=fvsDisp.filter(function(f){return !comps.some(function(c){return c.id===f.id;});})
+    .map(function(f){return '<option value="'+f.id+'">'+esc('FV '+f.numero+' — $'+f.total.toLocaleString('es-AR'))+'</option>';}).join('');
+  var sel=document.getElementById('em-fv-add');
+  if(sel){sel.innerHTML='<option value="">+ Agregar factura...</option>'+fvDispOpts;}
+  renderCompAplList();
+}
+function agregarCompApl(){
+  var sel=document.getElementById('em-fv-add');
+  if(!sel||!sel.value)return;
+  var fvId=sel.value;
+  var fvsAll=window._editFvsAll||[];
+  var fv=fvsAll.find(function(f){return f.id===fvId;});
+  if(!fv)return;
+  var comps=window._editCompsApl||[];
+  if(comps.some(function(c){return c.id===fvId;}))return;
+  // Calculate remaining on factura (total - already applied by other recibos)
+  // Default to full total for new addition
+  comps.push({id:fv.id,tipo:'fv',numero:fv.numero,importeAplicado:fv.total});
+  window._editCompsApl=comps;
+  // Remove from select
+  var opt=sel.querySelector('option[value="'+fvId+'"]');
+  if(opt)opt.remove();
+  sel.value='';
+  renderCompAplList();
+}
+function actualizarResumenApl(){
+  var res=document.getElementById('comp-apl-resumen');
+  if(!res)return;
+  var comps=window._editCompsApl||[];
+  var totalApl=comps.reduce(function(s,c){return s+(parseFloat(c.importeAplicado)||0);},0);
+  var importe=parseFloat((document.getElementById('em-imp')||{}).value)||0;
+  var diff=importe-totalApl;
+  var color=Math.abs(diff)<0.01?'#27ae60':(diff>0?'#e67e22':'#e74c3c');
+  var msg=Math.abs(diff)<0.01?'✓ Imputación completa':(diff>0?'⚠ Quedan $'+diff.toLocaleString('es-AR',{minimumFractionDigits:2})+' sin imputar':'⚠ Imputado $'+Math.abs(diff).toLocaleString('es-AR',{minimumFractionDigits:2})+' más que el importe');
+  res.innerHTML='<span style="color:'+color+'">'+msg+'</span>';
+}
+
 async function guardarMovTesoreria(tabla,id){
   const eid=_empresa.id;
   const fecha=document.getElementById('em-f').value;
@@ -3802,15 +3895,51 @@ async function guardarMovTesoreria(tabla,id){
   if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){cajaId=document.getElementById('em-cj')?.value||'';}
   const existing=(await DB.getE(eid,tabla)).find(x=>x.id===id);
   if(!existing){toast('Registro no encontrado','error');return}
+  // Sync any pending input changes to _editCompsApl
+  if(tabla==='recibos_cobro'&&window._editCompsApl){
+    document.querySelectorAll('.comp-apl-imp').forEach(function(inp){
+      var idx=parseInt(inp.dataset.idx);
+      if(!isNaN(idx)&&window._editCompsApl[idx]){
+        window._editCompsApl[idx].importeAplicado=parseFloat(inp.value)||0;
+      }
+    });
+  }
   const updated=Object.assign({},existing,{
     fecha,importe,formaPagoId:fpId,
     bancoId:bancoId||null,cajaId:cajaId||null,
     observaciones:document.getElementById('em-obs').value.trim(),
-    ...(tabla==='recibos_cobro'&&{clienteId:document.getElementById('em-cl')?.value||null}),
+    ...(tabla==='recibos_cobro'&&{
+      clienteId:document.getElementById('em-cl')?.value||null,
+      comprobantesAplicados:window._editCompsApl||existing.comprobantesAplicados||[],
+    }),
     ...(tabla==='ordenes_pago'&&{proveedorId:document.getElementById('em-pv')?.value||null}),
   });
   showLoading('Guardando...');
   await DB.upsertItem(eid,tabla,updated);
+  DB._clearCache(eid,tabla);
+  // Recalculate factura estados after recibo edit
+  if(tabla==='recibos_cobro'){
+    const todosRecibos=await DB.getE(eid,'recibos_cobro');
+    const fvsAll=await DB.getE(eid,'facturas_venta');
+    // Collect all FV ids referenced across all recibos
+    const fvIdsAfectados=new Set();
+    (updated.comprobantesAplicados||[]).forEach(function(c){if(c.tipo==='fv')fvIdsAfectados.add(c.id);});
+    (existing.comprobantesAplicados||[]).forEach(function(c){if(c.tipo==='fv')fvIdsAfectados.add(c.id);});
+    for(const fvId of fvIdsAfectados){
+      const fv=fvsAll.find(function(f){return f.id===fvId;});
+      if(!fv)continue;
+      const totalImputado=todosRecibos.reduce(function(s,r){
+        // Use updated recibo data for the one we just saved
+        var comps=(r.id===id?(updated.comprobantesAplicados||[]):(r.comprobantesAplicados||[]));
+        return s+comps.filter(function(c){return c.id===fvId;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);
+      },0);
+      const nuevoEstado=totalImputado>=fv.total-0.001?'cobrada':'pendiente';
+      if(fv.estado!==nuevoEstado){
+        await DB.upsertItem(eid,'facturas_venta',Object.assign({},fv,{estado:nuevoEstado,fechaCobro:nuevoEstado==='cobrada'?fecha:null}));
+        DB._clearCache(eid,'facturas_venta');
+      }
+    }
+  }
   hideLoading();
   closeModal();toast('Movimiento actualizado','success');renderTesoreria();
 }
