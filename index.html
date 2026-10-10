@@ -1314,14 +1314,15 @@ async function renderDashboard(c){
     const credito=recsCl.reduce((s,r)=>s+r.importe,0)+ncsCl.reduce((s,n)=>s+n.importe,0);
     const saldoCl=debito-credito;
     if(saldoCl<=0)continue;
-    // Distribuir saldo neto entre fv pendientes por vencimiento
-    // Descontar de cada factura lo ya imputado parcialmente en recibos
-    const fvsPend=fvsCl.filter(f=>f.estado!=='cobrada').sort((a,b)=>getFechaVencFV(a)<getFechaVencFV(b)?-1:1);
+    // Distribuir saldo neto entre fv con saldo pendiente real por vencimiento
+    // Usamos comprobantesAplicados para calcular saldo real de cada FV (independiente de su estado guardado)
+    const fvsOrdenadas=fvsCl.slice().sort((a,b)=>getFechaVencFV(a)<getFechaVencFV(b)?-1:1);
     let resto=saldoCl;
-    for(const f of fvsPend){
+    for(const f of fvsOrdenadas){
       if(resto<=0)break;
-      const yaImputado=recsCl.reduce((s,r)=>(s+(r.comprobantesAplicados||[]).filter(c=>c.id===f.id).reduce((a,c)=>a+c.importeAplicado,0)),0);
+      const yaImputado=recsCl.reduce((s,r)=>(s+(r.comprobantesAplicados||[]).filter(c=>c.id===f.id).reduce((a,c)=>a+(parseFloat(c.importeAplicado)||0),0)),0);
       const saldoFv=Math.max(0,f.total-yaImputado);
+      if(saldoFv<0.001)continue; // ya cubierta totalmente
       const aplicado=Math.min(saldoFv,resto);
       if(aplicado>0.001){
         if(getFechaVencFV(f)<hoy)pendVencido+=aplicado;
@@ -3934,10 +3935,9 @@ async function guardarMovTesoreria(tabla,id){
         return s+comps.filter(function(c){return c.id===fvId;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);
       },0);
       const nuevoEstado=totalImputado>=fv.total-0.001?'cobrada':'pendiente';
-      if(fv.estado!==nuevoEstado){
-        await DB.upsertItem(eid,'facturas_venta',Object.assign({},fv,{estado:nuevoEstado,fechaCobro:nuevoEstado==='cobrada'?fecha:null}));
-        DB._clearCache(eid,'facturas_venta');
-      }
+      // Siempre actualizar para corregir estados incorrectos históricos
+      await DB.upsertItem(eid,'facturas_venta',Object.assign({},fv,{estado:nuevoEstado,fechaCobro:nuevoEstado==='cobrada'?fecha:null}));
+      DB._clearCache(eid,'facturas_venta');
     }
   }
   hideLoading();
@@ -4304,12 +4304,18 @@ async function renderCCClientes(){
       var d=new Date(f.fecha);d.setDate(d.getDate()+dias);
       return d.toISOString().slice(0,10);
     }
-    // Solo facturas pendientes (no cobradas) para el desglose vencido
-    var fvsPend=fvs.filter(f=>f.estado!=='cobrada');
-    if(_ccDesde)fvsPend=fvsPend.filter(f=>f.fecha>=_ccDesde);
-    if(_ccHasta)fvsPend=fvsPend.filter(f=>f.fecha<=_ccHasta);
-    var saldoVencido=fvsPend.filter(f=>fechaVencFV(f)<_hoy).reduce((s,f)=>s+f.total,0);
-    var saldoNoVencido=fvsPend.filter(f=>fechaVencFV(f)>=_hoy).reduce((s,f)=>s+f.total,0);
+    // Desglose vencido/no vencido usando saldo real por factura (independiente del estado guardado)
+    var fvsFiltradas=fvs.slice();
+    if(_ccDesde)fvsFiltradas=fvsFiltradas.filter(f=>f.fecha>=_ccDesde);
+    if(_ccHasta)fvsFiltradas=fvsFiltradas.filter(f=>f.fecha<=_ccHasta);
+    var saldoVencido=0,saldoNoVencido=0;
+    fvsFiltradas.forEach(function(f){
+      var yaImputado=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+      var saldoFv=Math.max(0,f.total-yaImputado);
+      if(saldoFv<0.001)return;
+      if(fechaVencFV(f)<_hoy)saldoVencido+=saldoFv;
+      else saldoNoVencido+=saldoFv;
+    });
     // Recibos con saldo sin aplicar (importe cobrado > lo efectivamente imputado a facturas)
     var saldoSinAplicar=recs.reduce(function(s,r){
       var aplicado=(r.comprobantesAplicados||[]).reduce(function(a,c){return a+c.importeAplicado;},0);
