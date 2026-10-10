@@ -374,6 +374,15 @@ td{padding:9px 13px;font-size:13px}
   </div>
 </div>
 
+<!-- ══ QUICK-CREATE MINI-MODAL ══ -->
+<div id="qc-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(2px)" onclick="event.target===this&&closeQC()">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--r-lg);width:100%;max-width:420px;box-shadow:var(--sh-lg);animation:mIn .18s ease">
+    <div class="mh"><h3 id="qc-title">Alta rápida</h3><button class="mcl" onclick="closeQC()">×</button></div>
+    <div class="mb" id="qc-body"></div>
+    <div class="mf" id="qc-foot"></div>
+  </div>
+</div>
+
 <!-- ══ CONFIRM ══ -->
 <div id="confirm-overlay">
   <div class="confirm-box">
@@ -478,8 +487,8 @@ const FIELD_TO_DB = {
   productos_compra:{ rubroId:'rubro_id' },
   bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
   cajas:           {},
-  facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion', loteAbonos:'lote_abonos' },
-  facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
+  facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion', loteAbonos:'lote_abonos' },
+  facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
   recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
   ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
   notas_credito:        { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
@@ -890,6 +899,130 @@ function closeModal(){document.getElementById('overlay').classList.remove('open'
 function overlayClick(e){/* no-op: el modal solo se cierra con X o botones explícitos */}
 
 // ═══════════════════════════════════════════════════════════
+// QUICK-CREATE MINI-MODAL (cliente/proveedor desde factura)
+// ═══════════════════════════════════════════════════════════
+let _qcTargetSelect=null;
+
+function closeQC(){
+  document.getElementById('qc-overlay').style.display='none';
+  _qcTargetSelect=null;
+}
+
+async function quickCreateCliente(targetSelectId){
+  _qcTargetSelect=targetSelectId;
+  const eid=_empresa.id;
+  const items=await DB.getE(eid,'clientes');
+  const nextCod=`CLI-${String(items.length+1).padStart(4,'0')}`;
+  document.getElementById('qc-title').textContent='Alta rápida de cliente';
+  document.getElementById('qc-body').innerHTML=`
+    <div class="fg"><label>Código</label><input id="qc-cod" value="${esc(nextCod)}"></div>
+    <div class="fg"><label>Razón social / Nombre *</label><input id="qc-nom" placeholder="Nombre del cliente"></div>
+    <div class="row2">
+      <div class="fg"><label>CUIT / DNI</label><input id="qc-cuit" placeholder="20-12345678-9"></div>
+      <div class="fg"><label>Condición IVA</label><select id="qc-iva">${IVA_OPTS.map(o=>`<option${o==='Resp. Inscripto'?' selected':''}>${o}</option>`).join('')}</select></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Condición cobro</label><select id="qc-cob"><option value="contado">Contado</option><option value="cc">Cuenta Corriente</option></select></div>
+      <div class="fg"><label>Días venc. (CC)</label><input id="qc-dias" type="number" value="30" min="1"></div>
+    </div>`;
+  document.getElementById('qc-foot').innerHTML=`
+    <button class="btn btn-secondary" onclick="closeQC()">Cancelar</button>
+    <button class="btn btn-primary" onclick="qcSaveCliente()">Crear cliente</button>`;
+  document.getElementById('qc-overlay').style.display='flex';
+  setTimeout(()=>document.getElementById('qc-nom').focus(),50);
+}
+
+async function qcSaveCliente(){
+  const nombre=document.getElementById('qc-nom').value.trim();
+  if(!nombre){toast('Nombre obligatorio','error');return}
+  const eid=_empresa.id;
+  const obj={id:genId(),empresa_id:eid,
+    codigo:document.getElementById('qc-cod').value.trim(),
+    nombre,
+    cuit:document.getElementById('qc-cuit').value.trim(),
+    condicion_iva:document.getElementById('qc-iva').value,
+    condicion_cobro:document.getElementById('qc-cob').value,
+    dias_venc:parseInt(document.getElementById('qc-dias').value)||30,
+    email:'',telefono:'',direccion:'',observaciones:'',
+    servicios_habituales:[],abonos:[],activo:true};
+  showLoading('Creando cliente...');
+  const r=await fetch(`${SB_URL}/rest/v1/clientes`,{method:'POST',headers:{...sbHeaders(),'Prefer':'return=representation'},body:JSON.stringify(obj)});
+  hideLoading();
+  if(!r.ok){toast('Error al crear cliente','error');return}
+  // Invalidar caché para que próximas llamadas refresquen
+  DB._clearCache(eid,'clientes');
+  // Agregar al select del modal
+  const sel=document.getElementById(_qcTargetSelect);
+  if(sel){
+    const opt=document.createElement('option');
+    opt.value=obj.id;opt.textContent=nombre;
+    sel.appendChild(opt);sel.value=obj.id;
+    // Disparar change si existe handler
+    sel.dispatchEvent(new Event('change'));
+  }
+  closeQC();
+  toast('Cliente creado','success');
+}
+
+async function quickCreateProveedor(targetSelectId){
+  _qcTargetSelect=targetSelectId;
+  const eid=_empresa.id;
+  const items=await DB.getE(eid,'proveedores');
+  const nextCod=`PRV-${String(items.length+1).padStart(4,'0')}`;
+  const rubros=(await DB.getE(eid,'rubros')).filter(x=>x.activo);
+  document.getElementById('qc-title').textContent='Alta rápida de proveedor';
+  document.getElementById('qc-body').innerHTML=`
+    <div class="fg"><label>Código</label><input id="qc-cod" value="${esc(nextCod)}"></div>
+    <div class="fg"><label>Razón social / Nombre *</label><input id="qc-nom" placeholder="Nombre del proveedor"></div>
+    <div class="row2">
+      <div class="fg"><label>CUIT</label><input id="qc-cuit" placeholder="30-12345678-9"></div>
+      <div class="fg"><label>Rubro</label><select id="qc-rub"><option value="">Sin rubro</option>${rubros.map(r=>`<option value="${r.id}">${esc(r.nombre)}</option>`).join('')}</select></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Condición pago</label><select id="qc-cpag"><option value="contado">Contado</option><option value="cc">Cuenta Corriente</option></select></div>
+      <div class="fg"><label>Días venc.</label><input id="qc-dias" type="number" value="30" min="1"></div>
+    </div>`;
+  document.getElementById('qc-foot').innerHTML=`
+    <button class="btn btn-secondary" onclick="closeQC()">Cancelar</button>
+    <button class="btn btn-primary" onclick="qcSaveProveedor()">Crear proveedor</button>`;
+  document.getElementById('qc-overlay').style.display='flex';
+  setTimeout(()=>document.getElementById('qc-nom').focus(),50);
+}
+
+async function qcSaveProveedor(){
+  const nombre=document.getElementById('qc-nom').value.trim();
+  if(!nombre){toast('Nombre obligatorio','error');return}
+  const eid=_empresa.id;
+  const rubroId=document.getElementById('qc-rub').value||null;
+  const obj={id:genId(),empresa_id:eid,
+    codigo:document.getElementById('qc-cod').value.trim(),
+    nombre,
+    cuit:document.getElementById('qc-cuit').value.trim(),
+    rubro_id:rubroId||null,
+    condicion_pago:document.getElementById('qc-cpag').value,
+    dias_venc:parseInt(document.getElementById('qc-dias').value)||30,
+    email:'',telefono:'',direccion:'',observaciones:'',activo:true};
+  showLoading('Creando proveedor...');
+  const r=await fetch(`${SB_URL}/rest/v1/proveedores`,{method:'POST',headers:{...sbHeaders(),'Prefer':'return=representation'},body:JSON.stringify(obj)});
+  hideLoading();
+  if(!r.ok){toast('Error al crear proveedor','error');return}
+  // Invalidar caché para que próximas llamadas refresquen
+  DB._clearCache(eid,'proveedores');
+  // Agregar al select del modal
+  const sel=document.getElementById(_qcTargetSelect);
+  if(sel){
+    const opt=document.createElement('option');
+    opt.value=obj.id;
+    opt.textContent=nombre;
+    if(rubroId) opt.dataset.rubro=rubroId;
+    sel.appendChild(opt);sel.value=obj.id;
+    sel.dispatchEvent(new Event('change'));
+  }
+  closeQC();
+  toast('Proveedor creado','success');
+}
+
+// ═══════════════════════════════════════════════════════════
 // SCREENS
 // ═══════════════════════════════════════════════════════════
 function showScreen(name){
@@ -1152,6 +1285,14 @@ async function renderDashboard(c){
         <div class="mod-card" onclick="navTo('${s}')">
           <div class="mod-icon">${i}</div><div class="mod-name">${n}</div><div class="mod-desc">${d}</div>
         </div>`).join('')}
+    </div>
+    <div style="margin-top:20px;padding:14px 16px;background:var(--yellow-bg);border:1px solid var(--yellow-bd);border-radius:var(--r);display:flex;align-items:center;gap:12px">
+      <span style="font-size:18px">🔄</span>
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:600;color:var(--yellow)">Recalcular estados de facturas</div>
+        <div style="font-size:12px;color:var(--text2);margin-top:2px">Si el dashboard muestra facturas pendientes que ya fueron cobradas/pagadas, usá esta herramienta para corregir los datos históricos.</div>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="recalcularEstados()" style="white-space:nowrap">Recalcular ahora</button>
     </div>`;
 }
 
@@ -2288,6 +2429,8 @@ async function openFVModal(){
   const eid=_empresa.id;
   const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
   const fps=(await DB.getE(eid,'formas_pago')).filter(x=>x.activo);
+  const bancos=(await DB.getE(eid,'bancos')||[]).filter(x=>x.activo);
+  const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
   const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   _fvLineas=[{id:genId(),desc:'',cantidad:1,precio:0}];
@@ -2297,11 +2440,15 @@ async function openFVModal(){
       <div class="fg"><label>Fecha *</label><input id="fv-f" type="date" value="${today()}"></div>
     </div>
     <div class="row2">
-      <div class="fg"><label>Cliente *</label><select id="fv-cl" onchange="fvOnClienteChange()"><option value="">Seleccioná...</option>${clientes.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}</select></div>
+      <div class="fg"><label>Cliente * <button type="button" onclick="quickCreateCliente('fv-cl')" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;padding:0 4px;margin-left:4px" title="Crear cliente rápido">＋ nuevo</button></label><select id="fv-cl" onchange="fvOnClienteChange()"><option value="">Seleccioná...</option>${clientes.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}</select></div>
       <div class="fg"><label>Tipo</label><select id="fv-tipo" onchange="fvOnTipoChange()"><option value="cc">Cuenta Corriente</option><option value="contado">Contado</option></select></div>
     </div>
     <div id="fv-venc-row" class="fg"><label>Fecha de vencimiento</label><input id="fv-venc" type="date" value="${addDays(today(),30)}"></div>
-    <div id="fv-fp-row" class="fg" style="display:none"><label>Forma de cobro</label><select id="fv-fp"><option value="">Seleccioná...</option>${fps.map(fp=>`<option value="${fp.id}">${esc(fp.nombre)}</option>`).join('')}</select></div>
+    <div id="fv-fp-row" style="display:none">
+      <div class="fg"><label>Forma de cobro</label><select id="fv-fp" onchange="fpOnChange('${eid}',this.value,null,null,'fv-bk-cont','fv-cj-cont')"><option value="">Seleccioná...</option>${fps.map(fp=>`<option value="${fp.id}" data-tipo="${fp.tipo||''}">${esc(fp.nombre)}</option>`).join('')}</select></div>
+      <div id="fv-bk-cont" style="display:none"><div class="fg"><label>Banco *</label><select id="fv-bk"><option value="">Seleccioná banco...</option>${bancos.map(b=>`<option value="${b.id}">${esc(b.nombre)}</option>`).join('')}</select></div></div>
+      <div id="fv-cj-cont" style="display:none"><div class="fg"><label>Caja *</label><select id="fv-cj"><option value="">Seleccioná caja...</option>${cajas.map(c=>`<option value="${c.id}">${esc(c.nombre)}</option>`).join('')}</select></div></div>
+    </div>
     <div class="divider"></div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
       <strong style="font-size:13px">Detalle</strong>
@@ -2394,9 +2541,24 @@ async function saveFV(){
   const cfg=await DB.cfg(eid);const nums=getNums(cfg);
   const numero=`FAC-${String(nums.FAC).padStart(5,'0')}`;
   nums.FAC++;await DB.setCfg(eid,{nums});
+  let formaPagoId=null,cajaId=null,bancoId=null;
+  if(tipo==='contado'){
+    formaPagoId=document.getElementById('fv-fp').value;
+    if(!formaPagoId){toast('Seleccioná una forma de cobro','error');return}
+    const fps2=await DB.getE(eid,'formas_pago');
+    const fp=fps2.find(x=>x.id===formaPagoId);
+    if(fp&&FP_TIPO_BANCO.includes(fp.tipo)){
+      bancoId=document.getElementById('fv-bk')?.value||'';
+      if(!bancoId){toast('Seleccioná el banco para esta forma de cobro','error');return}
+    }
+    if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){
+      cajaId=document.getElementById('fv-cj')?.value||'';
+      if(!cajaId){toast('Seleccioná la caja para esta forma de cobro','error');return}
+    }
+  }
   const fac={id:genId(),numero,fecha:document.getElementById('fv-f').value,clienteId,tipo,total,lineas,
     vencimiento:tipo==='cc'?document.getElementById('fv-venc').value:null,
-    formaPagoId:tipo==='contado'?document.getElementById('fv-fp').value:null,
+    formaPagoId,cajaId:cajaId||null,bancoId:bancoId||null,
     observaciones:document.getElementById('fv-obs').value.trim(),
     estado:tipo==='contado'?'cobrada':'pendiente',fechaCreacion:new Date().toISOString()};
   showLoading('Guardando factura...');
@@ -2844,7 +3006,7 @@ async function openFCModal(){
     </div>
     <div class="row2">
       <div class="fg"><label>Fecha recepción *</label><input id="fc-f" type="date" value="${today()}"></div>
-      <div class="fg"><label>Proveedor *</label><select id="fc-pv" onchange="fcOnProvChange()"><option value="">Seleccioná...</option>${provs.map(p=>`<option value="${p.id}" data-rubro="${p.rubroId||''}">${esc(p.nombre)}</option>`).join('')}</select></div>
+      <div class="fg"><label>Proveedor * <button type="button" onclick="quickCreateProveedor('fc-pv')" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;padding:0 4px;margin-left:4px" title="Crear proveedor rápido">＋ nuevo</button></label><select id="fc-pv" onchange="fcOnProvChange()"><option value="">Seleccioná...</option>${provs.map(p=>`<option value="${p.id}" data-rubro="${p.rubroId||''}">${esc(p.nombre)}</option>`).join('')}</select></div>
     </div>
     <div class="row2">
       <div class="fg"><label>Tipo</label><select id="fc-tipo" onchange="fcOnTipoChange()"><option value="cc">Cuenta Corriente</option><option value="contado">Contado</option></select></div>
@@ -3264,6 +3426,18 @@ async function saveCobroDirecto(){
     fechaCreacion:new Date().toISOString()};
   showLoading('Registrando cobro...');
   await DB.upsertItem(eid,'recibos_cobro',rec);
+  // Marcar como cobradas las facturas de venta aplicadas
+  const fvsAll=await DB.getE(eid,'facturas_venta');
+  for(const comp of compsAplicados){
+    if(comp.tipo==='fv'){
+      const fv=fvsAll.find(f=>f.id===comp.id);
+      if(fv&&fv.estado!=='cobrada'){
+        await DB.upsertItem(eid,'facturas_venta',{...fv,estado:'cobrada',fechaCobro:rec.fecha});
+      }
+    }
+  }
+  DB._clearCache(eid,'facturas_venta');
+  DB._clearCache(eid,'recibos_cobro');
   hideLoading();
   closeModal();toast('Cobro registrado · '+numero,'success');renderTesoreria();
 }
@@ -3332,8 +3506,93 @@ async function savePagoDirecto(){
     fechaCreacion:new Date().toISOString()};
   showLoading('Registrando pago...');
   await DB.upsertItem(eid,'ordenes_pago',op);
+  // Marcar como pagadas las facturas de compra aplicadas
+  const fcsAll=await DB.getE(eid,'facturas_compra');
+  for(const comp of pdCompsAplicados){
+    if(comp.tipo==='fc'){
+      const fc=fcsAll.find(f=>f.id===comp.id);
+      if(fc&&fc.estado!=='pagada'){
+        await DB.upsertItem(eid,'facturas_compra',{...fc,estado:'pagada',fechaPago:op.fecha});
+      }
+    }
+  }
+  DB._clearCache(eid,'facturas_compra');
+  DB._clearCache(eid,'ordenes_pago');
   hideLoading();
   closeModal();toast('Pago registrado · '+numero,'success');renderTesoreria();
+}
+
+async function recalcularEstados(){
+  const eid=_empresa.id;
+  showLoading('Recalculando estados de facturas...');
+  try{
+    // Cargar todos los datos necesarios
+    DB._clearCache(eid,'facturas_venta');
+    DB._clearCache(eid,'facturas_compra');
+    DB._clearCache(eid,'recibos_cobro');
+    DB._clearCache(eid,'ordenes_pago');
+    const [fvsAll,fcsAll,recibos,ordenes]=await Promise.all([
+      DB.getE(eid,'facturas_venta'),
+      DB.getE(eid,'facturas_compra'),
+      DB.getE(eid,'recibos_cobro'),
+      DB.getE(eid,'ordenes_pago')
+    ]);
+    let updFV=0,updFC=0;
+    // Marcar facturas venta cobradas: cualquier FV cuyo id aparezca en algún recibo
+    const fvCobradasIds=new Set();
+    const fvFechaMap={};
+    for(const r of recibos){
+      const ids=r.facturaIds||[];
+      const comps=r.comprobantesAplicados||[];
+      // Recopilar ids desde facturaIds directamente
+      for(const fid of ids){ fvCobradasIds.add(fid); if(!fvFechaMap[fid])fvFechaMap[fid]=r.fecha; }
+      // También desde comprobantesAplicados (puede haber FVs sin estar en facturaIds)
+      for(const c of comps){ if(c.tipo==='fv'){ fvCobradasIds.add(c.id); if(!fvFechaMap[c.id])fvFechaMap[c.id]=r.fecha; } }
+    }
+    // También facturas venta contado que ya deberían estar cobradas
+    for(const fv of fvsAll){
+      if(fv.tipo==='contado'&&fv.estado!=='cobrada'){
+        fvCobradasIds.add(fv.id);
+        if(!fvFechaMap[fv.id])fvFechaMap[fv.id]=fv.fecha;
+      }
+    }
+    for(const fv of fvsAll){
+      if(fvCobradasIds.has(fv.id)&&fv.estado!=='cobrada'){
+        await DB.upsertItem(eid,'facturas_venta',{...fv,estado:'cobrada',fechaCobro:fvFechaMap[fv.id]||fv.fecha});
+        updFV++;
+      }
+    }
+    // Marcar facturas compra pagadas: cualquier FC cuyo id aparezca en alguna orden de pago
+    const fcPagadasIds=new Set();
+    const fcFechaMap={};
+    for(const o of ordenes){
+      const ids=o.facturaIds||[];
+      const comps=o.comprobantesAplicados||[];
+      for(const fid of ids){ fcPagadasIds.add(fid); if(!fcFechaMap[fid])fcFechaMap[fid]=o.fecha; }
+      for(const c of comps){ if(c.tipo==='fc'){ fcPagadasIds.add(c.id); if(!fcFechaMap[c.id])fcFechaMap[c.id]=o.fecha; } }
+    }
+    // También facturas compra contado
+    for(const fc of fcsAll){
+      if(fc.tipo==='contado'&&fc.estado!=='pagada'){
+        fcPagadasIds.add(fc.id);
+        if(!fcFechaMap[fc.id])fcFechaMap[fc.id]=fc.fecha;
+      }
+    }
+    for(const fc of fcsAll){
+      if(fcPagadasIds.has(fc.id)&&fc.estado!=='pagada'){
+        await DB.upsertItem(eid,'facturas_compra',{...fc,estado:'pagada',fechaPago:fcFechaMap[fc.id]||fc.fecha});
+        updFC++;
+      }
+    }
+    DB._clearCache(eid,'facturas_venta');
+    DB._clearCache(eid,'facturas_compra');
+    hideLoading();
+    toast(`Estados actualizados: ${updFV} facturas de venta cobradas, ${updFC} facturas de compra pagadas`,'success');
+    renderDashboard();
+  }catch(e){
+    hideLoading();
+    toast('Error al recalcular estados: '+e.message,'error');
+  }
 }
 
 function eliminarMovTesoreria(tabla,id){
