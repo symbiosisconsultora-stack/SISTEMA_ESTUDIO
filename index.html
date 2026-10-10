@@ -3631,27 +3631,30 @@ async function recalcularEstados(){
       DB.getE(eid,'ordenes_pago')
     ]);
     let updFV=0,updFC=0;
-    // Marcar facturas venta cobradas: cualquier FV cuyo id aparezca en algún recibo
-    const fvCobradasIds=new Set();
-    const fvFechaMap={};
-    for(const r of recibos){
-      const ids=r.facturaIds||[];
-      const comps=r.comprobantesAplicados||[];
-      // Recopilar ids desde facturaIds directamente
-      for(const fid of ids){ fvCobradasIds.add(fid); if(!fvFechaMap[fid])fvFechaMap[fid]=r.fecha; }
-      // También desde comprobantesAplicados (puede haber FVs sin estar en facturaIds)
-      for(const c of comps){ if(c.tipo==='fv'){ fvCobradasIds.add(c.id); if(!fvFechaMap[c.id])fvFechaMap[c.id]=r.fecha; } }
-    }
-    // También facturas venta contado que ya deberían estar cobradas
+    // Recalcular estado de cada FV en base al total realmente imputado
     for(const fv of fvsAll){
-      if(fv.tipo==='contado'&&fv.estado!=='cobrada'){
-        fvCobradasIds.add(fv.id);
-        if(!fvFechaMap[fv.id])fvFechaMap[fv.id]=fv.fecha;
+      let nuevoEstado,fechaCobro=fv.fechaCobro||null;
+      if(fv.tipo==='contado'){
+        // Contado siempre cobrada
+        nuevoEstado='cobrada';
+        if(!fechaCobro)fechaCobro=fv.fecha;
+      } else {
+        // CC: sumar todo lo imputado en comprobantesAplicados de todos los recibos
+        const totalImputado=recibos.reduce(function(s,r){
+          return s+(r.comprobantesAplicados||[]).filter(function(c){return c.id===fv.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);
+        },0);
+        if(totalImputado>=fv.total-0.001){
+          nuevoEstado='cobrada';
+          // fecha del último recibo que la cubre
+          const recsCubre=recibos.filter(r=>(r.comprobantesAplicados||[]).some(c=>c.id===fv.id));
+          fechaCobro=recsCubre.length?recsCubre[recsCubre.length-1].fecha:fv.fecha;
+        } else {
+          nuevoEstado='pendiente';
+          fechaCobro=null;
+        }
       }
-    }
-    for(const fv of fvsAll){
-      if(fvCobradasIds.has(fv.id)&&fv.estado!=='cobrada'){
-        await DB.upsertItem(eid,'facturas_venta',{...fv,estado:'cobrada',fechaCobro:fvFechaMap[fv.id]||fv.fecha});
+      if(fv.estado!==nuevoEstado||fv.fechaCobro!==fechaCobro){
+        await DB.upsertItem(eid,'facturas_venta',{...fv,estado:nuevoEstado,fechaCobro});
         updFV++;
       }
     }
@@ -3918,10 +3921,11 @@ async function guardarMovTesoreria(tabla,id){
   showLoading('Guardando...');
   await DB.upsertItem(eid,tabla,updated);
   DB._clearCache(eid,tabla);
+  DB._clearCache(eid,'facturas_venta');
   // Recalculate factura estados after recibo edit
   if(tabla==='recibos_cobro'){
-    const todosRecibos=await DB.getE(eid,'recibos_cobro');
-    const fvsAll=await DB.getE(eid,'facturas_venta');
+    const todosRecibos=await DB.getE(eid,'recibos_cobro'); // fresh after clearCache
+    const fvsAll=await DB.getE(eid,'facturas_venta'); // fresh after clearCache
     // Collect all FV ids referenced across all recibos
     const fvIdsAfectados=new Set();
     (updated.comprobantesAplicados||[]).forEach(function(c){if(c.tipo==='fv')fvIdsAfectados.add(c.id);});
