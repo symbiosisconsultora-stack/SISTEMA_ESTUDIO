@@ -411,6 +411,23 @@ td{padding:9px 13px;font-size:13px}
 // ═══════════════════════════════════════════════════════════
 const genId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 const esc=s=>s==null?'':String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Preserva foco y posición del cursor en inputs de búsqueda al re-renderizar
+function _captureFocus(){
+  const el=document.activeElement;
+  if(!el||el.tagName!=='INPUT')return null;
+  return{placeholder:el.placeholder,sel:[el.selectionStart,el.selectionEnd]};
+}
+function _restoreFocus(snap,container){
+  if(!snap)return;
+  const c=container||document.getElementById('main-content');
+  if(!c)return;
+  requestAnimationFrame(()=>{
+    const inp=Array.from(c.querySelectorAll('input')).find(i=>i.placeholder===snap.placeholder);
+    if(!inp)return;
+    inp.focus();
+    try{inp.setSelectionRange(snap.sel[0],snap.sel[1]);}catch(e){}
+  });
+}
 const fmtARS=n=>'$ '+Number(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtNum=n=>Number(n||0).toLocaleString('es-AR',{minimumFractionDigits:2,maximumFractionDigits:2});
 // Formatea un input numérico mientras escribe (punto de miles, coma decimal)
@@ -1264,20 +1281,43 @@ async function navTo(sec){
 // ═══════════════════════════════════════════════════════════
 async function renderDashboard(c){
   const eid=_empresa.id;
-  const cl=(await DB.getE(eid,'clientes')).filter(x=>x.activo).length;
+  const clientes=await DB.getE(eid,'clientes');
+  const cl=clientes.filter(x=>x.activo).length;
   const pr=(await DB.getE(eid,'proveedores')).filter(x=>x.activo).length;
   const fv=await DB.getE(eid,'facturas_venta');
   const fc=await DB.getE(eid,'facturas_compra');
-  const pendCobro=fv.filter(f=>f.tipo==='cc'&&f.estado!=='cobrada').reduce((s,f)=>s+f.total,0);
+  const hoy=today();
+  // Pendientes CC: calcular vencido vs no vencido
+  const fvPend=fv.filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
+  function getFechaVencFV(f){
+    if(f.fechaVenc)return f.fechaVenc;
+    const cl2=clientes.find(c2=>c2.id===f.clienteId);
+    const dias=(cl2&&cl2.diasVenc)||30;
+    if(!f.fecha)return hoy;
+    const d=new Date(f.fecha);d.setDate(d.getDate()+dias);
+    return d.toISOString().slice(0,10);
+  }
+  const pendVencido=fvPend.filter(f=>getFechaVencFV(f)<hoy).reduce((s,f)=>s+f.total,0);
+  const pendNoVencido=fvPend.filter(f=>getFechaVencFV(f)>=hoy).reduce((s,f)=>s+f.total,0);
+  const pendCobro=pendVencido+pendNoVencido;
   const pendPago=fc.filter(f=>f.tipo==='cc'&&f.estado!=='pagada').reduce((s,f)=>s+f.total,0);
   const mes=today().slice(0,7)+'-01';
   const vtaMes=fv.filter(f=>f.fecha>=mes).reduce((s,f)=>s+f.total,0);
   (c||document.getElementById('main-content')).innerHTML=`
     <p class="mb16 text-muted">Bienvenido, <strong style="color:var(--text)">${esc(_user.nombre)}</strong> · ${esc(_empresa.nombre)}</p>
     <div class="g4 mb24">
-      ${[['Clientes activos',cl,'var(--accent)'],['Proveedores activos',pr,'var(--accent)'],['Ventas del mes',fmtARS(vtaMes),'var(--accent)'],['Pendiente de cobro',fmtARS(pendCobro),'var(--yellow)']].map(([l,v,c2])=>`
-        <div class="stat-card"><div class="stat-lbl">${l}</div><div class="stat-val" style="color:${c2};font-size:20px">${v}</div></div>
-      `).join('')}
+      <div class="stat-card"><div class="stat-lbl">Clientes activos</div><div class="stat-val" style="color:var(--accent);font-size:20px">${cl}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Proveedores activos</div><div class="stat-val" style="color:var(--accent);font-size:20px">${pr}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Ventas del mes</div><div class="stat-val" style="color:var(--accent);font-size:20px">${fmtARS(vtaMes)}</div></div>
+      <div class="stat-card" onclick="navTo('cuentas-corrientes')" style="cursor:pointer" title="Ver cuentas corrientes">
+        <div class="stat-lbl">Pendiente de cobro</div>
+        <div class="stat-val" style="color:var(--yellow);font-size:20px">${fmtARS(pendCobro)}</div>
+        <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:3px">
+          ${pendVencido>0?`<div style="display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--red);font-weight:600">⚠ Vencido</span><span style="color:var(--red);font-weight:600">${fmtARS(pendVencido)}</span></div>`:''}
+          ${pendNoVencido>0?`<div style="display:flex;justify-content:space-between;font-size:11px"><span style="color:var(--text2)">Por vencer</span><span style="color:var(--text2)">${fmtARS(pendNoVencido)}</span></div>`:''}
+          ${pendCobro===0?`<div style="font-size:11px;color:var(--green)">✓ Sin pendientes</div>`:''}
+        </div>
+      </div>
     </div>
     <h3 style="font-size:14px;font-weight:600;margin-bottom:14px">Módulos del sistema</h3>
     <div class="module-grid">
@@ -1299,11 +1339,15 @@ async function renderDashboard(c){
 // ═══════════════════════════════════════════════════════════
 // CLIENTES
 // ═══════════════════════════════════════════════════════════
-let _clQ='';
+let _clQ='',_clSoloActivos=false,_clSoloInactivos=false;
 async function renderClientes(){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const items=await DB.getE(eid,'clientes');
-  const f=_clQ?items.filter(x=>x.nombre.toLowerCase().includes(_clQ.toLowerCase())||(x.cuit||'').includes(_clQ)):items;
+  let f=items;
+  if(_clSoloActivos)f=f.filter(x=>x.activo);
+  else if(_clSoloInactivos)f=f.filter(x=>!x.activo);
+  if(_clQ)f=f.filter(x=>x.nombre.toLowerCase().includes(_clQ.toLowerCase())||(x.cuit||'').includes(_clQ));
   const c=document.getElementById('main-content');
   const rows=f.map(function(cl){
     var emailHtml=cl.email?'<br><span style="font-size:11px;color:var(--text2)">'+esc(cl.email)+'</span>':'';
@@ -1337,6 +1381,8 @@ async function renderClientes(){
     <div class="toolbar">
       <div class="toolbar-l">
         <div class="sw"><span class="si">🔍</span><input value="${esc(_clQ)}" placeholder="Buscar cliente..." oninput="_clQ=this.value;renderClientes()" style="width:240px;padding-left:32px"></div>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;user-select:none"><input type="checkbox" ${_clSoloActivos?'checked':''} onchange="_clSoloActivos=this.checked;if(_clSoloActivos)_clSoloInactivos=false;renderClientes()"> Solo activos</label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;cursor:pointer;user-select:none"><input type="checkbox" ${_clSoloInactivos?'checked':''} onchange="_clSoloInactivos=this.checked;if(_clSoloInactivos)_clSoloActivos=false;renderClientes()"> Solo inactivos</label>
       </div>
       ${xlsxToolbarBtns('clientes')}
       <label class="btn btn-secondary btn-sm" style="cursor:pointer" title="Importar abonos desde Excel">
@@ -1347,6 +1393,7 @@ async function renderClientes(){
       <button class="btn btn-primary btn-sm" onclick="openClienteModal()">+ Nuevo cliente</button>
     </div>
     ${tableHtml}`;
+  _restoreFocus(_fSnap,c);
 }
 
 const IVA_OPTS=['Resp. Inscripto','Monotributista','Consumidor Final','Exento'];
@@ -1467,6 +1514,7 @@ async function actualizarAbonosGlobal(){
 // ═══════════════════════════════════════════════════════════
 let _pvQ='';
 async function renderProveedores(){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const items=await DB.getE(eid,'proveedores');
   const rubros=await DB.getE(eid,'rubros');
@@ -1493,6 +1541,7 @@ async function renderProveedores(){
     </tr>`}).join('')}
     </tbody></table></div>`
     :`<div class="empty"><div class="ei">🏭</div><h3>Sin proveedores</h3><p>Creá el primer proveedor</p></div>`}`;
+  _restoreFocus(_fSnap,c);
 }
 
 async function openProveedorModal(id){
@@ -1550,6 +1599,7 @@ async function saveProveedor(id){
 // ═══════════════════════════════════════════════════════════
 let _prQ='';
 async function renderProductos(sec){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const key=sec==='prod-venta'?'productos_venta':'productos_compra';
   const label=sec==='prod-venta'?'Producto de venta':'Producto de compra';
@@ -1579,6 +1629,7 @@ async function renderProductos(sec){
     </tr>`}).join('')}
     </tbody></table></div>`
     :`<div class="empty"><div class="ei">📦</div><h3>Sin productos</h3><p>Creá el primer ${label.toLowerCase()}</p></div>`}`;
+  _restoreFocus(_fSnap,c);
 }
 
 async function openProductoModal(sec,id){
@@ -2385,12 +2436,14 @@ async function delEmpresa(){
 // ═══════════════════════════════════════════════════════════
 let _fvQ='';
 async function renderVentas(){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const fv=await DB.getE(eid,'facturas_venta');
   const cl=await DB.getE(eid,'clientes');
   const q=_fvQ.toLowerCase();
   const f=q?fv.filter(x=>{const c=cl.find(c=>c.id===x.clienteId);return x.numero.toLowerCase().includes(q)||(c&&c.nombre.toLowerCase().includes(q))}):fv;
-  document.getElementById('main-content').innerHTML=`
+  const _mc=document.getElementById('main-content');
+  _mc.innerHTML=`
     <div class="toolbar">
       <div class="toolbar-l">
         <div class="sw"><span class="si">🔍</span><input value="${esc(_fvQ)}" placeholder="Buscar factura o cliente..." oninput="_fvQ=this.value;renderVentas()" style="width:240px;padding-left:32px"></div>
@@ -2422,6 +2475,7 @@ async function renderVentas(){
     </tbody></table></div>
     <p class="text-muted" style="font-size:12px;margin-top:10px">${f.length} factura${f.length!==1?'s':''} · Total: <strong>${fmtARS(f.reduce((s,x)=>s+x.total,0))}</strong></p>`
     :`<div class="empty"><div class="ei">💰</div><h3>Sin facturas</h3><p>Emití la primera factura de venta</p></div>`}`;
+  _restoreFocus(_fSnap,_mc);
 }
 
 let _fvLineas=[];
@@ -2951,13 +3005,15 @@ async function deshacerFacMasiva(){
 // ═══════════════════════════════════════════════════════════
 let _fcQ='';
 async function renderCompras(){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const fc=await DB.getE(eid,'facturas_compra');
   const pvs=await DB.getE(eid,'proveedores');
   const rubros=await DB.getE(eid,'rubros');
   const q=_fcQ.toLowerCase();
   const f=q?fc.filter(x=>{const p=pvs.find(p=>p.id===x.proveedorId);return x.numero.toLowerCase().includes(q)||(p&&p.nombre.toLowerCase().includes(q))}):fc;
-  document.getElementById('main-content').innerHTML=`
+  const _mc2=document.getElementById('main-content');
+  _mc2.innerHTML=`
     <div class="toolbar">
       <div class="toolbar-l"><div class="sw"><span class="si">🔍</span><input value="${esc(_fcQ)}" placeholder="Buscar..." oninput="_fcQ=this.value;renderCompras()" style="width:240px;padding-left:32px"></div></div>
       <button class="btn btn-secondary btn-sm" onclick="navTo('proveedores')">🏭 Proveedores</button>
@@ -2986,6 +3042,7 @@ async function renderCompras(){
     </tbody></table></div>
     <p class="text-muted" style="font-size:12px;margin-top:10px">${f.length} factura${f.length!==1?'s':''} · Total: <strong>${fmtARS(f.reduce((s,x)=>s+x.total,0))}</strong></p>`
     :`<div class="empty"><div class="ei">🛒</div><h3>Sin facturas de compra</h3><p>Registrá la primera factura de compra o gasto</p></div>`}`;
+  _restoreFocus(_fSnap,_mc2);
 }
 
 let _fcLineas=[];
@@ -4035,6 +4092,7 @@ var _ccQ='';
 var _ccDesde='',_ccHasta='';
 var _ccSoloDeudor=false,_ccSoloAcreedor=false,_ccOcultarSinSaldo=false,_ccOcultarSinMovs=false;
 async function renderCCClientes(){
+  const _fSnap=_captureFocus();
   const eid=_empresa.id;
   const clientes=(await DB.getE(eid,'clientes')).filter(x=>x.activo);
   const fvsAll=await DB.getE(eid,'facturas_venta');
@@ -4052,6 +4110,7 @@ async function renderCCClientes(){
     clientesCC=clientesCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));
   }
 
+  const _hoy=today();
   // Calcular saldos (con filtro de fechas si hay)
   function calcCC(cl){
     var fvs=fvsAll.filter(f=>f.clienteId===cl.id&&f.tipo==='cc');
@@ -4073,7 +4132,21 @@ async function renderCCClientes(){
     var credito=recsP.reduce((s,r)=>s+r.importe,0)+ncsP.reduce((s,n)=>s+n.importe,0);
     var saldo=saldoPrevio+debito-credito;
     var tieneMovs=(fvs.length+recs.length+ncs.length)>0;
-    return {saldoPrevio,debito,credito,saldo,tieneMovs};
+    // Calcular vencido vs no vencido sobre facturas pendientes (sin filtro de fechas para saldo real)
+    function fechaVencFV(f){
+      if(f.fechaVenc)return f.fechaVenc;
+      var dias=(cl.diasVenc)||30;
+      if(!f.fecha)return _hoy;
+      var d=new Date(f.fecha);d.setDate(d.getDate()+dias);
+      return d.toISOString().slice(0,10);
+    }
+    // Solo facturas pendientes (no cobradas) para el desglose vencido
+    var fvsPend=fvs.filter(f=>f.estado!=='cobrada');
+    if(_ccDesde)fvsPend=fvsPend.filter(f=>f.fecha>=_ccDesde);
+    if(_ccHasta)fvsPend=fvsPend.filter(f=>f.fecha<=_ccHasta);
+    var saldoVencido=fvsPend.filter(f=>fechaVencFV(f)<_hoy).reduce((s,f)=>s+f.total,0);
+    var saldoNoVencido=fvsPend.filter(f=>fechaVencFV(f)>=_hoy).reduce((s,f)=>s+f.total,0);
+    return {saldoPrevio,debito,credito,saldo,tieneMovs,saldoVencido,saldoNoVencido};
   }
 
   // Aplicar filtros de checkbox
@@ -4090,12 +4163,16 @@ async function renderCCClientes(){
     var d=calcCC(cl);
     var saldoCls=d.saldo>0?'color:var(--red)':d.saldo<0?'color:var(--green)':'color:var(--text2)';
     var cid=cl.id;
+    var vencHtml=d.saldoVencido>0
+      ?'<br><span style="font-size:10px;color:var(--red);font-weight:600">⚠ Venc: '+fmtARS(d.saldoVencido)+'</span>'
+        +(d.saldoNoVencido>0?'<br><span style="font-size:10px;color:var(--text2)">A vencer: '+fmtARS(d.saldoNoVencido)+'</span>':'')
+      :(d.saldoNoVencido>0?'<br><span style="font-size:10px;color:var(--text2)">A vencer: '+fmtARS(d.saldoNoVencido)+'</span>':'');
     return '<tr>'
       +'<td><strong>'+esc(cl.nombre)+'</strong>'+(cl.cuit?'<br><span style="font-size:11px;color:var(--text2)">'+esc(cl.cuit)+'</span>':'')+'</td>'
       +(_ccDesde?'<td class="td-mono" style="font-size:12px;color:var(--text2)">'+fmtARS(d.saldoPrevio)+'</td>':'')
       +'<td class="td-mono">'+fmtARS(d.debito)+'</td>'
       +'<td class="td-mono">'+fmtARS(d.credito)+'</td>'
-      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(d.saldo)+'</td>'
+      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(d.saldo)+vencHtml+'</td>'
       +'<td><div class="td-act">'
       +'<button class="btn btn-secondary btn-sm" onclick="verCCCliente(\''+cid+'\',\''+(_ccDesde||'')+'\',\''+(_ccHasta||'')+'\')">Ver cuenta</button>'
       +'<button class="btn btn-ghost btn-sm btn-icon" onclick="abrirNotaCreditoCliente(\''+cid+'\')" title="Nota de crédito">📝</button>'
@@ -4106,16 +4183,20 @@ async function renderCCClientes(){
   var totalSaldo=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).saldo;},0);
   var totalDeb=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).debito;},0);
   var totalCred=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).credito;},0);
+  var totalVencido=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).saldoVencido;},0);
+  var totalNoVencido=clientesFilt.reduce(function(s,cl){return s+calcCC(cl).saldoNoVencido;},0);
 
   var theadPrevio=_ccDesde?'<th class="td-r">Saldo previo</th>':'';
-  var theadRow='<tr><th>Cliente</th>'+theadPrevio+'<th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo</th><th></th></tr>';
+  var theadRow='<tr><th>Cliente</th>'+theadPrevio+'<th class="td-r">Débito</th><th class="td-r">Crédito</th><th class="td-r">Saldo · Vencimiento</th><th></th></tr>';
 
   document.getElementById('main-content').innerHTML=`
-    <div class="g3 mb20">
+    <div class="g4 mb20" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
       <div class="stat-card"><div class="stat-lbl">Clientes</div><div class="stat-val" style="color:var(--accent)">${clientesFilt.length}</div></div>
       <div class="stat-card"><div class="stat-lbl">Total débito</div><div class="stat-val" style="color:var(--red);font-size:16px">${fmtARS(totalDeb)}</div></div>
       <div class="stat-card"><div class="stat-lbl">Total crédito</div><div class="stat-val" style="color:var(--green);font-size:16px">${fmtARS(totalCred)}</div></div>
       <div class="stat-card"><div class="stat-lbl">Saldo total</div><div class="stat-val" style="color:${totalSaldo>=0?'var(--red)':'var(--green)'};font-size:16px">${fmtARS(Math.abs(totalSaldo))}</div></div>
+      ${totalVencido>0?`<div class="stat-card" style="border-color:var(--red-bd);background:var(--red-bg)"><div class="stat-lbl" style="color:var(--red)">⚠ Vencido</div><div class="stat-val" style="color:var(--red);font-size:16px">${fmtARS(totalVencido)}</div></div>`:''}
+      ${totalNoVencido>0?`<div class="stat-card"><div class="stat-lbl" style="color:var(--text2)">Por vencer</div><div class="stat-val" style="color:var(--yellow);font-size:16px">${fmtARS(totalNoVencido)}</div></div>`:''}
     </div>
     <div class="card mb16">
       <div class="flex-c gap8 flex-wrap">
@@ -4138,6 +4219,7 @@ async function renderCCClientes(){
     ${clientesFilt.length?`<div class="tw"><table><thead>${theadRow}</thead>
     <tbody>${rows}</tbody></table></div>`
     :`<div class="empty"><div class="ei">📒</div><h3>Sin cuentas corrientes</h3><p>Los clientes con condición CC aparecerán aquí</p></div>`}`;
+  _restoreFocus(_fSnap,document.getElementById('main-content'));
 }
 
 async function verCCCliente(clienteId,desde,hasta){
