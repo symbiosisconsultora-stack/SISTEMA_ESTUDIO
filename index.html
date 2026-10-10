@@ -500,6 +500,9 @@ const TABLE_COLS = {
   empleados:       new Set(['id','empresa_id','nombre','dni','activo','fecha_alta']),
   liquidaciones_sueldo: new Set(['id','empresa_id','empleado_id','numero','periodo','fecha','sueldo','comision','total','estado','observaciones','fecha_creacion']),
   pagos_sueldo:    new Set(['id','empresa_id','empleado_id','liquidacion_id','numero','fecha','importe','forma_pago_id','caja_id','observaciones','fecha_creacion']),
+  rubros:          new Set(['id','empresa_id','nombre','tipo','activo']),
+  formas_pago:     new Set(['id','empresa_id','nombre','tipo','activo']),
+  cajas:           new Set(['id','empresa_id','nombre','tipo','activo']),
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
