@@ -4953,17 +4953,21 @@ async function cargarCompsPendientesCliente(clienteId,contId){
   if(!cont)return;
   if(!clienteId){cont.innerHTML='';return;}
   const eid=_empresa.id;
-  const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc'&&f.estado!=='cobrada');
-  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');}catch(e){}
-  // saldo disponible de NCs (no completamente aplicadas)
   var recs=await DB.getE(eid,'recibos_cobro');
+  // Facturas con saldo pendiente real (independiente del estado guardado)
+  var todasFvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc');
+  var fvsConSaldo=todasFvs.map(function(f){
+    var yaImputado=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+    return Object.assign({},f,{saldoPend:Math.max(0,f.total-yaImputado)});
+  }).filter(function(f){return f.saldoPend>0.001;});
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');}catch(e){}
   var ncsConSaldo=ncs.filter(function(n){
     var aplicado=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
     return n.importe-aplicado>0.001;
   });
-  if(!fvs.length&&!ncsConSaldo.length){cont.innerHTML='<p style="font-size:12px;color:var(--text2);margin-top:6px">Sin comprobantes pendientes para este cliente.</p>';return;}
+  if(!fvsConSaldo.length&&!ncsConSaldo.length){cont.innerHTML='<p style="font-size:12px;color:var(--text2);margin-top:6px">Sin comprobantes pendientes para este cliente.</p>';return;}
   var rows='';
-  fvs.forEach(function(f){rows+='<tr><td><input type="checkbox" class="cd-comp-check" value="'+f.id+'" data-tipo="fv" data-num="'+esc(f.numero)+'" data-total="'+f.total+'" onchange="cdCompToggle(this,\'cd\')"></td><td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px">Factura</td><td style="font-size:12px;text-align:right;font-family:monospace">'+fmtARS(f.total)+'</td><td><input id="cd-comp-imp-'+f.id+'" type="number" step="0.01" value="'+f.total+'" style="width:100px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';});
+  fvsConSaldo.forEach(function(f){rows+='<tr><td><input type="checkbox" class="cd-comp-check" value="'+f.id+'" data-tipo="fv" data-num="'+esc(f.numero)+'" data-total="'+f.saldoPend+'" onchange="cdCompToggle(this,\'cd\')"></td><td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px">Factura</td><td style="font-size:12px;text-align:right;font-family:monospace">'+fmtARS(f.saldoPend)+'</td><td><input id="cd-comp-imp-'+f.id+'" type="number" step="0.01" value="'+f.saldoPend+'" style="width:100px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';});
   ncsConSaldo.forEach(function(n){
     var aplicado=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
     var saldo=n.importe-aplicado;
@@ -5007,9 +5011,13 @@ async function abrirAplicacionCC(clienteId){
   const eid=_empresa.id;
   const cl=(await DB.getE(eid,'clientes')).find(x=>x.id===clienteId);
   if(!cl)return;
-  const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc'&&f.estado!=='cobrada');
   var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.clienteId===clienteId&&n.tipo==='venta');}catch(e){}
   const recs=await DB.getE(eid,'recibos_cobro');
+  // Calcular saldo real de cada factura usando comprobantesAplicados (no confiar en f.estado)
+  const fvs=(await DB.getE(eid,'facturas_venta')).filter(f=>f.clienteId===clienteId&&f.tipo==='cc').map(function(f){
+    var yaImputado=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+    return Object.assign({},f,{saldoPend:Math.max(0,f.total-yaImputado)});
+  }).filter(function(f){return f.saldoPend>0.001;});
   // Recibos sin aplicar o con saldo disponible
   var recsSaldo=recs.filter(function(r){
     if(r.clienteId!==clienteId)return false;
@@ -5043,8 +5051,8 @@ async function abrirAplicacionCC(clienteId){
 
   // Panel derecho: débitos pendientes (facturas)
   var debitRows=fvs.map(function(f){
-    return '<tr><td><input type="checkbox" class="apl-deb-check" value="'+f.id+'" data-num="'+esc(f.numero)+'" data-total="'+f.total+'"></td>'
-      +'<td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px;text-align:right;font-family:monospace;color:var(--red)">'+fmtARS(f.total)+'</td></tr>';
+    return '<tr><td><input type="checkbox" class="apl-deb-check" value="'+f.id+'" data-num="'+esc(f.numero)+'" data-total="'+f.saldoPend+'"></td>'
+      +'<td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px;text-align:right;font-family:monospace;color:var(--red)">'+fmtARS(f.saldoPend)+'</td></tr>';
   }).join('');
 
   if(!creditRows&&!debitRows){
@@ -5061,7 +5069,7 @@ async function abrirAplicacionCC(clienteId){
       </div>
       <div>
         <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Facturas pendientes</div>
-        ${debitRows?`<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)"><th style="padding:5px 7px;font-size:11px"></th><th style="padding:5px 7px;font-size:11px">N°</th><th style="padding:5px 7px;font-size:11px;text-align:right">Total</th></tr></thead><tbody>${debitRows}</tbody></table></div>`
+        ${debitRows?`<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)"><th style="padding:5px 7px;font-size:11px"></th><th style="padding:5px 7px;font-size:11px">N°</th><th style="padding:5px 7px;font-size:11px;text-align:right">Saldo pendiente</th></tr></thead><tbody>${debitRows}</tbody></table></div>`
         :'<p style="font-size:12px;color:var(--text2)">Sin facturas pendientes</p>'}
       </div>
     </div>
@@ -5102,7 +5110,8 @@ async function guardarAplicacionCC(clienteId){
         if(restante<=0)return;
         var fac=fvs.find(x=>x.id===db.value);
         if(!fac)return;
-        var ya=(rec.comprobantesAplicados||[]).filter(c=>c.id===fac.id).reduce(function(s,c){return s+c.importeAplicado;},0);
+        // Sumar lo ya imputado a esta factura en TODOS los recibos (no solo el actual)
+        var ya=recs.reduce(function(s,r){return s+(r.comprobantesAplicados||[]).filter(function(c){return c.id===fac.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
         var pendiente=fac.total-ya;
         var aplicar=Math.min(restante,pendiente);
         if(aplicar>0.001){compApls.push({id:fac.id,tipo:'fv',numero:fac.numero,importeAplicado:aplicar});restante-=aplicar;}
@@ -5112,6 +5121,7 @@ async function guardarAplicacionCC(clienteId){
   }
 
   // Marcar facturas como cobradas si su saldo queda cubierto
+  DB._clearCache(eid,'recibos_cobro');
   const recsUpd=await DB.getE(eid,'recibos_cobro');
   for(var j=0;j<debSelects.length;j++){
     var facId=debSelects[j].value;
