@@ -506,7 +506,7 @@ const FIELD_TO_DB = {
   cajas:           {},
   facturas_venta:  { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', fechaCobro:'fecha_cobro', fechaCreacion:'fecha_creacion', loteAbonos:'lote_abonos' },
   facturas_compra: { proveedorId:'proveedor_id', rubroId:'rubro_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', nFP:'n_fp', fechaPago:'fecha_pago', fechaCreacion:'fecha_creacion' },
-  recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
+  recibos_cobro:   { clienteId:'cliente_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', formasPago:'formas_pago', fechaCreacion:'fecha_creacion' },
   ordenes_pago:    { proveedorId:'proveedor_id', formaPagoId:'forma_pago_id', cajaId:'caja_id', bancoId:'banco_id', facturaIds:'factura_ids', comprobantesAplicados:'comprobantes_aplicados', fechaCreacion:'fecha_creacion' },
   notas_credito:        { clienteId:'cliente_id', proveedorId:'proveedor_id', facturaId:'factura_id', fechaCreacion:'fecha_creacion' },
   empleados:            { fechaAlta:'fecha_alta' },
@@ -521,7 +521,7 @@ const TABLE_COLS = {
   proveedores:     new Set(['id','empresa_id','codigo','nombre','cuit','rubro_id','email','telefono','direccion','condicion_pago','dias_venc','observaciones','activo']),
   facturas_venta:  new Set(['id','empresa_id','numero','fecha','cliente_id','tipo','total','lineas','vencimiento','forma_pago_id','caja_id','banco_id','observaciones','estado','fecha_cobro','fecha_creacion','lote_abonos']),
   facturas_compra: new Set(['id','empresa_id','numero','n_fp','fecha','proveedor_id','tipo','rubro_id','total','lineas','vencimiento','forma_pago_id','caja_id','banco_id','observaciones','estado','fecha_pago','fecha_creacion']),
-  recibos_cobro:   new Set(['id','empresa_id','numero','fecha','cliente_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
+  recibos_cobro:   new Set(['id','empresa_id','numero','fecha','cliente_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','formas_pago','observaciones','fecha_creacion']),
   ordenes_pago:    new Set(['id','empresa_id','numero','fecha','proveedor_id','importe','forma_pago_id','caja_id','banco_id','factura_ids','comprobantes_aplicados','observaciones','fecha_creacion']),
   empleados:       new Set(['id','empresa_id','nombre','dni','activo','fecha_alta']),
   liquidaciones_sueldo: new Set(['id','empresa_id','empleado_id','numero','periodo','fecha','sueldo','comision','total','estado','observaciones','fecha_creacion']),
@@ -3338,7 +3338,12 @@ async function renderTesoreria(){
 
   // Movimientos: unificamos todo en una lista con bancoId
   const movs=[];
-  recCob.forEach(r=>movs.push({id:r.id,fecha:r.fecha,tipo:'Cobro',subtipo:'Cobro cliente',numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId,bancoId:r.bancoId||'',cajaId:r.cajaId||'',ref:r.clienteId,entidad:clientes.find(x=>x.id===r.clienteId),imprimible:'recibo',tabla:'recibos_cobro'}));
+  recCob.forEach(function(r){
+    var lineas=r.formasPago&&r.formasPago.length?r.formasPago:[{formaPagoId:r.formaPagoId,bancoId:r.bancoId||'',cajaId:r.cajaId||'',importe:r.importe}];
+    lineas.forEach(function(ln,li){
+      movs.push({id:r.id+(lineas.length>1?'__'+li:''),_recId:r.id,fecha:r.fecha,tipo:'Cobro',subtipo:'Cobro cliente',numero:r.numero+(lineas.length>1?' ('+(li+1)+')':''),importe:parseFloat(ln.importe)||0,dir:'in',fpId:ln.formaPagoId||r.formaPagoId||'',bancoId:ln.bancoId||'',cajaId:ln.cajaId||'',ref:r.clienteId,entidad:clientes.find(x=>x.id===r.clienteId),imprimible:'recibo',imprimibleId:r.id,tabla:'recibos_cobro'});
+    });
+  });
   fvCob.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Cobro',subtipo:'Venta contado',numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:'',ref:f.clienteId,entidad:clientes.find(x=>x.id===f.clienteId),imprimible:'fv',tabla:'facturas_venta'}));
   ordPago.forEach(o=>movs.push({id:o.id,fecha:o.fecha,tipo:'Pago',subtipo:'Pago proveedor',numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId,bancoId:o.bancoId||'',cajaId:o.cajaId||'',ref:o.proveedorId,entidad:proveedores.find(x=>x.id===o.proveedorId),tabla:'ordenes_pago'}));
   fcPag.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Pago',subtipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:f.cajaId||'',ref:f.proveedorId,entidad:proveedores.find(x=>x.id===f.proveedorId),tabla:'facturas_compra'}));
@@ -3375,9 +3380,11 @@ async function renderTesoreria(){
     var cj=cajasAll.find(x=>x.id===m.cajaId);
     var entNombre=m.entidad?esc(m.entidad.nombre):'—';
     var destino=bk?esc(bk.nombre):cj?esc(cj.nombre):'—';
-    var printBtn=m.imprimible==='recibo'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir recibo" onclick="imprimirComprobante(\'recibo\',\''+m.id+'\')">🖨️</button>':'';
-    var delBtn='<button class="btn btn-ghost btn-sm btn-icon" title="Eliminar" onclick="eliminarMovTesoreria(\''+m.tabla+'\',\''+m.id+'\')">🗑️</button>';
-    var editBtn=(m.tabla==='recibos_cobro'||m.tabla==='ordenes_pago')?'<button class="btn btn-ghost btn-sm btn-icon" title="Editar" onclick="editarMovTesoreria(\''+m.tabla+'\',\''+m.id+'\')">✏️</button>':'';
+    var printId=m.imprimibleId||m.id;
+    var baseId=m._recId||m.id;
+    var printBtn=m.imprimible==='recibo'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir recibo" onclick="imprimirComprobante(\'recibo\',\''+printId+'\')">🖨️</button>':'';
+    var delBtn='<button class="btn btn-ghost btn-sm btn-icon" title="Eliminar" onclick="eliminarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">🗑️</button>';
+    var editBtn=(m.tabla==='recibos_cobro'||m.tabla==='ordenes_pago')?'<button class="btn btn-ghost btn-sm btn-icon" title="Editar" onclick="editarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">✏️</button>':'';
     return '<tr>'
       +'<td>'+esc(m.fecha)+'</td>'
       +'<td>'+esc(m.subtipo)+'</td>'
@@ -3457,38 +3464,100 @@ async function abrirCobroDirecto(){
   const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
   const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
   var clOpts=clientes.map(function(c){return '<option value="'+c.id+'">'+esc(c.nombre)+'</option>';}).join('');
-  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'" data-tipo="'+(fp.tipo||'')+'">'+esc(fp.nombre)+'</option>';}).join('');
-  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'">'+esc(b.nombre)+'</option>';}).join('');
-  var cjOpts=cajas.map(function(c){return '<option value="'+c.id+'">'+esc(c.nombre)+'</option>';}).join('');
+  // Guardar opciones globalmente para uso en renderizado dinámico
+  window._cdFps=fps;window._cdBancos=bancos;window._cdCajas=cajas;window._cdEid=eid;
+  window._cdFormasPago=[{id:genId(),formaPagoId:'',cajaId:'',bancoId:'',importe:''}];
   openModal('Registrar cobro',`
     <div class="fg"><label>Cliente</label><select id="cd-cl" onchange="cargarCompsPendientesCliente(this.value,'cd-comps-cont')"><option value="">Sin cliente</option>${clOpts}</select></div>
-    <div class="row2">
-      <div class="fg"><label>Fecha *</label><input id="cd-f" type="date" value="${today()}"></div>
-      <div class="fg"><label>Importe *</label><input id="cd-imp" type="number" step="0.01" placeholder="0.00"></div>
+    <div class="fg"><label>Fecha *</label><input id="cd-f" type="date" value="${today()}"></div>
+    <div class="fg" style="margin-bottom:0">
+      <label style="display:flex;align-items:center;justify-content:space-between">
+        <span>Formas de cobro *</span>
+        <button class="btn btn-ghost btn-sm" onclick="cdAgregarFP()" style="font-size:12px;padding:2px 8px">+ Agregar línea</button>
+      </label>
+      <div id="cd-fps-cont" style="margin-top:6px"></div>
+      <div style="text-align:right;font-size:12px;color:var(--text2);margin-top:6px">Total: <strong id="cd-fp-total" style="color:var(--accent)">$ 0,00</strong></div>
     </div>
-    <div class="fg"><label>Forma de cobro *</label><select id="cd-fp" onchange="fpOnChange('${eid}',this.value,null,null,'cd-bk-cont','cd-cj-cont')"><option value="">Seleccioná...</option>${fpOpts}</select></div>
-    <div id="cd-bk-cont" style="display:none"><div class="fg"><label>Banco *</label><select id="cd-bk"><option value="">Seleccioná banco...</option>${bkOpts}</select></div></div>
-    <div id="cd-cj-cont" style="display:none"><div class="fg"><label>Caja *</label><select id="cd-cj"><option value="">Seleccioná caja...</option>${cjOpts}</select></div></div>
     <div class="fg"><label>Concepto / Observaciones</label><textarea id="cd-obs" rows="2"></textarea></div>
     <div id="cd-comps-cont"></div>
   `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar',cls:'btn-primary',fn:'saveCobroDirecto()'}]);
+  cdRenderFPs();
+}
+
+function cdBuildFPRow(ln,idx){
+  var fps=window._cdFps||[];var bancos=window._cdBancos||[];var cajas=window._cdCajas||[];
+  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(fp.id===ln.formaPagoId?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
+  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(b.id===ln.bancoId?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
+  var cjOpts=cajas.map(function(c){return '<option value="'+c.id+'"'+(c.id===ln.cajaId?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
+  var fp=fps.find(function(f){return f.id===ln.formaPagoId;});
+  var tipo=fp?(FP_TIPO_BANCO.includes(fp.tipo)?'banco':FP_TIPO_CAJA.includes(fp.tipo)?'caja':''):'';
+  return '<div class="cd-fp-row" data-idx="'+idx+'" style="display:grid;grid-template-columns:1fr auto auto auto;gap:6px;align-items:start;padding:7px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:5px">'
+    +'<div>'
+      +'<select onchange="cdOnFPChange('+idx+',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:13px"><option value="">Forma de pago...</option>'+fpOpts+'</select>'
+      +'<div id="cd-bk-c-'+idx+'" style="margin-top:5px;display:'+(tipo==='banco'?'block':'none')+'"><select onchange="cdSync('+idx+',\'bancoId\',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px"><option value="">Banco...</option>'+bkOpts+'</select></div>'
+      +'<div id="cd-cj-c-'+idx+'" style="margin-top:5px;display:'+(tipo==='caja'?'block':'none')+'"><select onchange="cdSync('+idx+',\'cajaId\',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px"><option value="">Caja...</option>'+cjOpts+'</select></div>'
+    +'</div>'
+    +'<input type="number" step="0.01" value="'+(ln.importe||'')+'" placeholder="Importe" onchange="cdSync('+idx+',\'importe\',this.value);cdActTotal()" oninput="cdSync('+idx+',\'importe\',this.value);cdActTotal()" style="width:110px;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:13px;text-align:right">'
+    +'<button class="btn btn-ghost btn-sm btn-icon" onclick="cdQuitarFP('+idx+')" title="Quitar" style="color:var(--red);padding:5px;'+(window._cdFormasPago.length<=1?'visibility:hidden':'')+'">✕</button>'
+    +'</div>';
+}
+
+function cdRenderFPs(){
+  var cont=document.getElementById('cd-fps-cont');if(!cont)return;
+  cont.innerHTML=(window._cdFormasPago||[]).map(function(ln,i){return cdBuildFPRow(ln,i);}).join('');
+  cdActTotal();
+}
+
+function cdAgregarFP(){
+  window._cdFormasPago.push({id:genId(),formaPagoId:'',cajaId:'',bancoId:'',importe:''});
+  cdRenderFPs();
+}
+
+function cdQuitarFP(idx){
+  window._cdFormasPago.splice(idx,1);
+  cdRenderFPs();
+}
+
+function cdSync(idx,campo,val){
+  if(window._cdFormasPago[idx])window._cdFormasPago[idx][campo]=val;
+}
+
+async function cdOnFPChange(idx,fpId){
+  cdSync(idx,'formaPagoId',fpId);
+  cdSync(idx,'bancoId','');cdSync(idx,'cajaId','');
+  var fps=window._cdFps||[];
+  var fp=fps.find(function(f){return f.id===fpId;});
+  var tipo=fp?(FP_TIPO_BANCO.includes(fp.tipo)?'banco':FP_TIPO_CAJA.includes(fp.tipo)?'caja':''):'';
+  var bkC=document.getElementById('cd-bk-c-'+idx);
+  var cjC=document.getElementById('cd-cj-c-'+idx);
+  if(bkC)bkC.style.display=tipo==='banco'?'block':'none';
+  if(cjC)cjC.style.display=tipo==='caja'?'block':'none';
+}
+
+function cdActTotal(){
+  var tot=(window._cdFormasPago||[]).reduce(function(s,ln){return s+(parseFloat(ln.importe)||0);},0);
+  var el=document.getElementById('cd-fp-total');
+  if(el)el.textContent=fmtARS(tot);
 }
 async function saveCobroDirecto(){
   const eid=_empresa.id;
-  const importe=parseFloat(document.getElementById('cd-imp').value)||0;
-  if(!importe){toast('El importe es obligatorio','error');return}
-  const fpId=document.getElementById('cd-fp').value;
-  if(!fpId){toast('Seleccioná una forma de cobro','error');return}
-  const fps=await DB.getE(eid,'formas_pago');
-  const fp=fps.find(x=>x.id===fpId);
-  let bancoId='',cajaId='';
-  if(fp&&FP_TIPO_BANCO.includes(fp.tipo)){
-    bancoId=document.getElementById('cd-bk')?.value||'';
-    if(!bancoId){toast('Seleccioná el banco para esta forma de cobro','error');return}
-  }
-  if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){
-    cajaId=document.getElementById('cd-cj')?.value||'';
-    if(!cajaId){toast('Seleccioná la caja para esta forma de cobro','error');return}
+  // Sincronizar inputs numéricos antes de leer
+  document.querySelectorAll('.cd-fp-row input[type=number]').forEach(function(inp){
+    var idx=parseInt(inp.closest('.cd-fp-row').dataset.idx);
+    if(!isNaN(idx)&&window._cdFormasPago[idx])window._cdFormasPago[idx].importe=parseFloat(inp.value)||0;
+  });
+  var fps_=window._cdFormasPago||[];
+  // Validar líneas
+  var lineasValidas=fps_.filter(function(ln){return ln.formaPagoId&&(parseFloat(ln.importe)||0)>0;});
+  if(!lineasValidas.length){toast('Agregá al menos una forma de cobro con importe','error');return}
+  const importe=lineasValidas.reduce(function(s,ln){return s+(parseFloat(ln.importe)||0);},0);
+  // Validar banco/caja por línea
+  const fpsDB=await DB.getE(eid,'formas_pago');
+  for(var i=0;i<lineasValidas.length;i++){
+    var ln=lineasValidas[i];
+    var fp=fpsDB.find(function(f){return f.id===ln.formaPagoId;});
+    if(fp&&FP_TIPO_BANCO.includes(fp.tipo)&&!ln.bancoId){toast('Seleccioná el banco para la línea '+(i+1),'error');return}
+    if(fp&&FP_TIPO_CAJA.includes(fp.tipo)&&!ln.cajaId){toast('Seleccioná la caja para la línea '+(i+1),'error');return}
   }
   const _fechaCD=document.getElementById('cd-f').value;
   if(await isMesCerrado(_fechaCD)){toast('El período '+_fechaCD.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
@@ -3504,17 +3573,22 @@ async function saveCobroDirecto(){
     var imp=inp?parseFloat(inp.value)||0:0;
     compsAplicados.push({id:cb.value,tipo:cb.dataset.tipo,numero:cb.dataset.num,importeAplicado:imp});
   });
-  const rec={id:genId(),numero,fecha:document.getElementById('cd-f').value,
+  // Primera línea para retrocompatibilidad
+  var primeraLn=lineasValidas[0];
+  const rec={id:genId(),numero,fecha:_fechaCD,
     clienteId:document.getElementById('cd-cl').value||null,
-    importe,formaPagoId:fpId,
-    ...(bancoId&&{bancoId}),
-    ...(cajaId&&{cajaId}),
+    importe,
+    formaPagoId:primeraLn.formaPagoId,
+    bancoId:primeraLn.bancoId||null,
+    cajaId:primeraLn.cajaId||null,
+    formasPago:lineasValidas,
     facturaIds:compsAplicados.filter(c=>c.tipo==='fv').map(c=>c.id),
     comprobantesAplicados:compsAplicados,
     observaciones:document.getElementById('cd-obs').value.trim(),
     fechaCreacion:new Date().toISOString()};
   showLoading('Registrando cobro...');
   await DB.upsertItem(eid,'recibos_cobro',rec);
+  DB._clearCache(eid,'recibos_cobro');
   // Marcar como cobradas las facturas de venta aplicadas solo si el importe cubre el total
   const fvsAll=await DB.getE(eid,'facturas_venta');
   const recsAllUpd=await DB.getE(eid,'recibos_cobro');
@@ -3758,15 +3832,21 @@ async function editarMovTesoreria(tabla,id){
       +'<select id="em-fv-add" style="flex:1"><option value="">+ Agregar factura...</option>'+fvDispOpts+'</select>'
       +'<button onclick="agregarCompApl()" style="background:#27ae60;color:#fff;border:none;border-radius:4px;padding:4px 10px;cursor:pointer;font-size:13px;">Agregar</button>'
       +'</div>'):'';
+    // Inicializar formasPago editable desde el recibo existente
+    window._emFps=fps;window._emBancos=bancos;window._emCajas=cajas;window._emEid=eid;
+    var initFPs=rec.formasPago&&rec.formasPago.length?JSON.parse(JSON.stringify(rec.formasPago)):[{id:genId(),formaPagoId:rec.formaPagoId||'',bancoId:rec.bancoId||'',cajaId:rec.cajaId||'',importe:rec.importe||''}];
+    window._emFormasPago=initFPs;
     openModal('Editar cobro · '+esc(rec.numero),`
       <div class="fg"><label>Cliente</label><select id="em-cl"><option value="">Sin cliente</option>${clOpts}</select></div>
-      <div class="row2">
-        <div class="fg"><label>Fecha *</label><input id="em-f" type="date" value="${rec.fecha}"></div>
-        <div class="fg"><label>Importe *</label><input id="em-imp" type="number" step="0.01" value="${rec.importe}" oninput="actualizarResumenApl()"></div>
+      <div class="fg"><label>Fecha *</label><input id="em-f" type="date" value="${rec.fecha}"></div>
+      <div class="fg" style="margin-bottom:0">
+        <label style="display:flex;align-items:center;justify-content:space-between">
+          <span>Formas de cobro *</span>
+          <button class="btn btn-ghost btn-sm" onclick="emAgregarFP()" style="font-size:12px;padding:2px 8px">+ Agregar línea</button>
+        </label>
+        <div id="em-fps-cont" style="margin-top:6px"></div>
+        <div style="text-align:right;font-size:12px;color:var(--text2);margin-top:6px">Total: <strong id="em-fp-total" style="color:var(--accent)">$ 0,00</strong></div>
       </div>
-      <div class="fg"><label>Forma de cobro *</label><select id="em-fp" onchange="fpOnChange('${eid}',this.value,null,null,'em-bk-cont','em-cj-cont')">${fpOpts}</select></div>
-      <div id="em-bk-cont" style="display:none"><div class="fg"><label>Banco</label><select id="em-bk"><option value="">Seleccioná banco...</option>${bkOpts}</select></div></div>
-      <div id="em-cj-cont" style="display:none"><div class="fg"><label>Caja</label><select id="em-cj"><option value="">Seleccioná caja...</option>${cjOpts}</select></div></div>
       <div class="fg"><label>Observaciones</label><textarea id="em-obs" rows="2">${esc(rec.observaciones||'')}</textarea></div>
       <div class="fg" style="border-top:1px solid #e0e0e0;padding-top:10px;margin-top:4px;">
         <label style="font-weight:600;margin-bottom:6px;display:block;">Imputación de comprobantes</label>
@@ -3780,15 +3860,7 @@ async function editarMovTesoreria(tabla,id){
     window._editRecId=id;
     window._editFvsAll=fvsAll;
     window._editClienteId=clienteId;
-    setTimeout(()=>{
-      const sel=document.getElementById('em-fp');
-      if(sel){sel.value=rec.formaPagoId||'';fpOnChange(eid,sel.value,null,null,'em-bk-cont','em-cj-cont');}
-      setTimeout(()=>{
-        if(rec.bancoId){const bk=document.getElementById('em-bk');if(bk)bk.value=rec.bancoId;}
-        if(rec.cajaId){const cj=document.getElementById('em-cj');if(cj)cj.value=rec.cajaId;}
-        renderCompAplList();
-      },50);
-    },50);
+    setTimeout(()=>{emRenderFPs();renderCompAplList();},50);
   } else if(tabla==='ordenes_pago'){
     const op=(await DB.getE(eid,'ordenes_pago')).find(x=>x.id===id);if(!op)return;
     const provs=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
@@ -3813,6 +3885,57 @@ async function editarMovTesoreria(tabla,id){
       },50);
     },50);
   }
+}
+
+// ── Helpers formas de pago en edición de cobro (em*) ──
+function emBuildFPRow(ln,idx){
+  var fps=window._emFps||[];var bancos=window._emBancos||[];var cajas=window._emCajas||[];
+  var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(fp.id===ln.formaPagoId?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
+  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(b.id===ln.bancoId?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
+  var cjOpts=cajas.map(function(c){return '<option value="'+c.id+'"'+(c.id===ln.cajaId?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
+  var fp=fps.find(function(f){return f.id===ln.formaPagoId;});
+  var tipo=fp?(FP_TIPO_BANCO.includes(fp.tipo)?'banco':FP_TIPO_CAJA.includes(fp.tipo)?'caja':''):'';
+  return '<div class="em-fp-row" data-idx="'+idx+'" style="display:grid;grid-template-columns:1fr auto auto;gap:6px;align-items:start;padding:7px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r-sm);margin-bottom:5px">'
+    +'<div>'
+      +'<select onchange="emOnFPChange('+idx+',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:13px"><option value="">Forma de pago...</option>'+fpOpts+'</select>'
+      +'<div id="em-bk-c-'+idx+'" style="margin-top:5px;display:'+(tipo==='banco'?'block':'none')+'"><select onchange="emSync('+idx+',\'bancoId\',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px"><option value="">Banco...</option>'+bkOpts+'</select></div>'
+      +'<div id="em-cj-c-'+idx+'" style="margin-top:5px;display:'+(tipo==='caja'?'block':'none')+'"><select onchange="emSync('+idx+',\'cajaId\',this.value)" style="width:100%;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px"><option value="">Caja...</option>'+cjOpts+'</select></div>'
+    +'</div>'
+    +'<input type="number" step="0.01" value="'+(ln.importe||'')+'" placeholder="Importe" onchange="emSync('+idx+',\'importe\',this.value);emActTotal()" oninput="emSync('+idx+',\'importe\',this.value);emActTotal()" style="width:110px;padding:5px 8px;border:1px solid var(--border);border-radius:var(--r-sm);font-size:13px;text-align:right">'
+    +'<button class="btn btn-ghost btn-sm btn-icon" onclick="emQuitarFP('+idx+')" title="Quitar" style="color:var(--red);padding:5px;'+(window._emFormasPago.length<=1?'visibility:hidden':'')+'">✕</button>'
+    +'</div>';
+}
+function emRenderFPs(){
+  var cont=document.getElementById('em-fps-cont');if(!cont)return;
+  cont.innerHTML=(window._emFormasPago||[]).map(function(ln,i){return emBuildFPRow(ln,i);}).join('');
+  emActTotal();
+}
+function emAgregarFP(){
+  window._emFormasPago.push({id:genId(),formaPagoId:'',cajaId:'',bancoId:'',importe:''});
+  emRenderFPs();
+}
+function emQuitarFP(idx){
+  window._emFormasPago.splice(idx,1);
+  emRenderFPs();
+}
+function emSync(idx,campo,val){
+  if(window._emFormasPago[idx])window._emFormasPago[idx][campo]=val;
+}
+function emOnFPChange(idx,fpId){
+  emSync(idx,'formaPagoId',fpId);
+  emSync(idx,'bancoId','');emSync(idx,'cajaId','');
+  var fps=window._emFps||[];
+  var fp=fps.find(function(f){return f.id===fpId;});
+  var tipo=fp?(FP_TIPO_BANCO.includes(fp.tipo)?'banco':FP_TIPO_CAJA.includes(fp.tipo)?'caja':''):'';
+  var bkC=document.getElementById('em-bk-c-'+idx);
+  var cjC=document.getElementById('em-cj-c-'+idx);
+  if(bkC)bkC.style.display=tipo==='banco'?'block':'none';
+  if(cjC)cjC.style.display=tipo==='caja'?'block':'none';
+}
+function emActTotal(){
+  var tot=(window._emFormasPago||[]).reduce(function(s,ln){return s+(parseFloat(ln.importe)||0);},0);
+  var el=document.getElementById('em-fp-total');
+  if(el)el.textContent=fmtARS(tot);
 }
 
 function renderCompAplList(){
@@ -3886,19 +4009,45 @@ function actualizarResumenApl(){
 async function guardarMovTesoreria(tabla,id){
   const eid=_empresa.id;
   const fecha=document.getElementById('em-f').value;
-  const importe=parseFloat(document.getElementById('em-imp').value)||0;
   if(!fecha){toast('La fecha es obligatoria','error');return}
-  if(!importe){toast('El importe es obligatorio','error');return}
-  const fpId=document.getElementById('em-fp').value;
-  if(!fpId){toast('Seleccioná una forma de pago','error');return}
   if(await isMesCerrado(fecha)){toast('El período '+fecha.slice(0,7)+' está cerrado. No se pueden registrar ni modificar operaciones.','error');return}
-  const fps=await DB.getE(eid,'formas_pago');
-  const fp=fps.find(x=>x.id===fpId);
-  let bancoId='',cajaId='';
-  if(fp&&FP_TIPO_BANCO.includes(fp.tipo)){bancoId=document.getElementById('em-bk')?.value||'';}
-  if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){cajaId=document.getElementById('em-cj')?.value||'';}
   const existing=(await DB.getE(eid,tabla)).find(x=>x.id===id);
   if(!existing){toast('Registro no encontrado','error');return}
+
+  // ── Formas de pago múltiples (solo recibos_cobro) ──
+  var fpId='',bancoId='',cajaId='',importe=0,formasPago=null;
+  if(tabla==='recibos_cobro'){
+    // Sincronizar inputs numéricos
+    document.querySelectorAll('.em-fp-row input[type=number]').forEach(function(inp){
+      var idx=parseInt(inp.closest('.em-fp-row').dataset.idx);
+      if(!isNaN(idx)&&window._emFormasPago[idx])window._emFormasPago[idx].importe=parseFloat(inp.value)||0;
+    });
+    var lineasValidas=(window._emFormasPago||[]).filter(function(ln){return ln.formaPagoId&&(parseFloat(ln.importe)||0)>0;});
+    if(!lineasValidas.length){toast('Agregá al menos una forma de cobro con importe','error');return}
+    const fpsDB=await DB.getE(eid,'formas_pago');
+    for(var i=0;i<lineasValidas.length;i++){
+      var ln=lineasValidas[i];
+      var fp_=fpsDB.find(function(f){return f.id===ln.formaPagoId;});
+      if(fp_&&FP_TIPO_BANCO.includes(fp_.tipo)&&!ln.bancoId){toast('Seleccioná el banco para la línea '+(i+1),'error');return}
+      if(fp_&&FP_TIPO_CAJA.includes(fp_.tipo)&&!ln.cajaId){toast('Seleccioná la caja para la línea '+(i+1),'error');return}
+    }
+    importe=lineasValidas.reduce(function(s,ln){return s+(parseFloat(ln.importe)||0);},0);
+    formasPago=lineasValidas;
+    fpId=lineasValidas[0].formaPagoId;
+    bancoId=lineasValidas[0].bancoId||'';
+    cajaId=lineasValidas[0].cajaId||'';
+  } else {
+    // ordenes_pago: mantener lógica original
+    importe=parseFloat(document.getElementById('em-imp').value)||0;
+    if(!importe){toast('El importe es obligatorio','error');return}
+    fpId=document.getElementById('em-fp').value;
+    if(!fpId){toast('Seleccioná una forma de pago','error');return}
+    const fps=await DB.getE(eid,'formas_pago');
+    const fp=fps.find(x=>x.id===fpId);
+    if(fp&&FP_TIPO_BANCO.includes(fp.tipo)){bancoId=document.getElementById('em-bk')?.value||'';}
+    if(fp&&FP_TIPO_CAJA.includes(fp.tipo)){cajaId=document.getElementById('em-cj')?.value||'';}
+  }
+
   // Sync any pending input changes to _editCompsApl
   if(tabla==='recibos_cobro'&&window._editCompsApl){
     document.querySelectorAll('.comp-apl-imp').forEach(function(inp){
@@ -3915,6 +4064,7 @@ async function guardarMovTesoreria(tabla,id){
     ...(tabla==='recibos_cobro'&&{
       clienteId:document.getElementById('em-cl')?.value||null,
       comprobantesAplicados:window._editCompsApl||existing.comprobantesAplicados||[],
+      formasPago:formasPago||existing.formasPago||null,
     }),
     ...(tabla==='ordenes_pago'&&{proveedorId:document.getElementById('em-pv')?.value||null}),
   });
@@ -4796,12 +4946,17 @@ async function imprimirComprobante(tipo,id){
     const rec=(await DB.getE(eid,'recibos_cobro')).find(x=>x.id===id);if(!rec)return;
     const cl=rec.clienteId?(await DB.getE(eid,'clientes')).find(x=>x.id===rec.clienteId):null;
     const fps=await DB.getE(eid,'formas_pago');
-    const fp=rec.formaPagoId?fps.find(x=>x.id===rec.formaPagoId):null;
-    // Sección MEDIOS DE PAGO
+    // Sección MEDIOS DE PAGO — agrupar por formaPagoId sumando importes
+    var lineasPago=rec.formasPago&&rec.formasPago.length?rec.formasPago:[{formaPagoId:rec.formaPagoId,importe:rec.importe}];
+    var agrupado={};
+    lineasPago.forEach(function(ln){var k=ln.formaPagoId||'';agrupado[k]=(agrupado[k]||0)+(parseFloat(ln.importe)||0);});
     var mediosPagoHtml='<h3 style="font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin:18px 0 8px;border-bottom:2px solid #334155;padding-bottom:4px">MEDIOS DE PAGO</h3>'
       +'<table style="width:100%;border-collapse:collapse;margin-bottom:14px"><thead><tr style="background:#f1f5f9"><th style="text-align:left;padding:6px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Método de pago</th><th style="text-align:right;padding:6px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Importe</th></tr></thead><tbody>'
-      +'<tr><td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+(fp?esc(fp.nombre):'—')+'</td>'
-      +'<td style="padding:5px 8px;font-size:12px;text-align:right;font-family:monospace;border-bottom:1px solid #e2e8f0"><strong>'+fmtARS(rec.importe)+'</strong></td></tr>'
+      +Object.keys(agrupado).map(function(fpId){
+        var fp=fps.find(function(f){return f.id===fpId;});
+        return '<tr><td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+(fp?esc(fp.nombre):'—')+'</td>'
+          +'<td style="padding:5px 8px;font-size:12px;text-align:right;font-family:monospace;border-bottom:1px solid #e2e8f0"><strong>'+fmtARS(agrupado[fpId])+'</strong></td></tr>';
+      }).join('')
       +'</tbody></table>';
     // Sección COMPROBANTES APLICADOS
     var compsHtml='';
