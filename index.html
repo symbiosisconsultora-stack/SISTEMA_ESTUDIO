@@ -494,12 +494,14 @@ const TABLE_MAP = {
   empleados:            'empleados',
   liquidaciones_sueldo: 'liquidaciones_sueldo',
   pagos_sueldo:         'pagos_sueldo',
+  transferencias:       'transferencias',
 };
 
 // Campos snake_case ↔ camelCase por tabla
 const FIELD_TO_DB = {
   clientes:        { condicionIva:'condicion_iva', condicionCobro:'condicion_cobro', diasVenc:'dias_venc', serviciosHabituales:'servicios_habituales', abonos:'abonos' },
   proveedores:     { rubroId:'rubro_id', condicionPago:'condicion_pago', diasVenc:'dias_venc' },
+  transferencias:  { bancoOrigenId:'banco_origen_id', bancoDestinoId:'banco_destino_id', fechaCreacion:'fecha_creacion' },
   productos_venta: { rubroId:'rubro_id' },
   productos_compra:{ rubroId:'rubro_id' },
   bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
@@ -529,6 +531,7 @@ const TABLE_COLS = {
   rubros:          new Set(['id','empresa_id','nombre','tipo','activo']),
   formas_pago:     new Set(['id','empresa_id','nombre','tipo','activo']),
   cajas:           new Set(['id','empresa_id','nombre','tipo','activo']),
+  transferencias:  new Set(['id','empresa_id','numero','fecha','banco_origen_id','banco_destino_id','importe','observaciones','fecha_creacion']),
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
@@ -1192,7 +1195,8 @@ const NAV_ITEMS=[
   {sec:'Operaciones',items:[
     {id:'ventas',icon:'💰',lbl:'Ventas'},
     {id:'compras',icon:'🛒',lbl:'Compras'},
-    {id:'cc-clientes',icon:'📒',lbl:'Ctas. Corrientes'},
+    {id:'cc-clientes',icon:'📒',lbl:'CTA CTE Clientes'},
+    {id:'cc-proveedores',icon:'📋',lbl:'CTA CTE Proveedores'},
     {id:'tesoreria',icon:'🏦',lbl:'Tesorería'},
     {id:'informes',icon:'📊',lbl:'Informes'},
   ]},
@@ -1217,7 +1221,8 @@ const SEC_INFO={
   dashboard:['Inicio','Panel principal'],
   ventas:['Ventas','Facturas y recibos de cobro'],
   compras:['Compras','Facturas de compra y pagos'],
-  'cc-clientes':['Cuentas Corrientes','Saldos y movimientos por cliente'],
+  'cc-clientes':['CTA CTE Clientes','Saldos y movimientos por cliente'],
+  'cc-proveedores':['CTA CTE Proveedores','Saldos y movimientos por proveedor'],
   tesoreria:['Tesorería','Caja, bancos y flujo de fondos'],
   informes:['Informes','Reportes de gestión'],
   clientes:['Clientes','Maestro de clientes'],
@@ -1261,6 +1266,7 @@ async function navTo(sec){
     dashboard:renderDashboard,ventas:renderVentas,compras:renderCompras,
     'facturacion-masiva':renderFacMasiva,
     'cc-clientes':renderCCClientes,
+    'cc-proveedores':renderCCProveedores,
     tesoreria:renderTesoreria,informes:renderInformes,
     clientes:renderClientes,proveedores:renderProveedores,
     'prod-venta':()=>renderProductos('prod-venta'),
@@ -3323,6 +3329,7 @@ async function savePagoRapido(facId){
 // ═══════════════════════════════════════════════════════════
 var _tesDesde='',_tesHasta='',_tesBanco='',_tesCaja='',_tesFP='',_tesTipo='';
 var _movsFiltGlobal=[];
+var _movsFiltFps=[];var _movsFiltBancos=[];var _movsFiltCajas=[];
 async function renderTesoreria(){
   const eid=_empresa.id;
   if(!_tesDesde)_tesDesde=today().slice(0,7)+'-01';
@@ -3335,6 +3342,7 @@ async function renderTesoreria(){
   const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
   const clientes=await DB.getE(eid,'clientes');
   const proveedores=await DB.getE(eid,'proveedores');
+  var transferencias=[];try{transferencias=await DB.getE(eid,'transferencias');}catch(e){}
 
   // Movimientos: unificamos todo en una lista con bancoId
   const movs=[];
@@ -3347,6 +3355,13 @@ async function renderTesoreria(){
   fvCob.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Cobro',subtipo:'Venta contado',numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:'',ref:f.clienteId,entidad:clientes.find(x=>x.id===f.clienteId),imprimible:'fv',tabla:'facturas_venta'}));
   ordPago.forEach(o=>movs.push({id:o.id,fecha:o.fecha,tipo:'Pago',subtipo:'Pago proveedor',numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId,bancoId:o.bancoId||'',cajaId:o.cajaId||'',ref:o.proveedorId,entidad:proveedores.find(x=>x.id===o.proveedorId),tabla:'ordenes_pago'}));
   fcPag.forEach(f=>movs.push({id:f.id,fecha:f.fecha,tipo:'Pago',subtipo:'Compra contado',numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,bancoId:f.bancoId||'',cajaId:f.cajaId||'',ref:f.proveedorId,entidad:proveedores.find(x=>x.id===f.proveedorId),tabla:'facturas_compra'}));
+  // Transferencias: dos movimientos por transferencia (egreso origen + ingreso destino)
+  transferencias.forEach(function(t){
+    var bOrig=bancos.find(x=>x.id===t.bancoOrigenId);
+    var bDest=bancos.find(x=>x.id===t.bancoDestinoId);
+    movs.push({id:t.id+'__out',_tsfId:t.id,fecha:t.fecha,tipo:'Transferencia',subtipo:'Egreso',numero:t.numero,importe:t.importe,dir:'out',fpId:'',bancoId:t.bancoOrigenId,cajaId:'',ref:t.bancoDestinoId,entidad:null,_bOrig:bOrig,_bDest:bDest,tabla:'transferencias',_esTransf:true});
+    movs.push({id:t.id+'__in',_tsfId:t.id,fecha:t.fecha,tipo:'Transferencia',subtipo:'Ingreso',numero:t.numero,importe:t.importe,dir:'in',fpId:'',bancoId:t.bancoDestinoId,cajaId:'',ref:t.bancoOrigenId,entidad:null,_bOrig:bOrig,_bDest:bDest,tabla:'transferencias',_esTransf:true});
+  });
   movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
 
   // Aplicar filtros
@@ -3371,6 +3386,7 @@ async function renderTesoreria(){
 
   var bancosOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(_tesBanco===b.id?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
   const cajasAll=await DB.getE(eid,'cajas');
+  _movsFiltFps=fps;_movsFiltBancos=bancos;_movsFiltCajas=cajasAll;
   var cajasOpts=cajasAll.filter(x=>x.activo).map(function(c){return '<option value="'+c.id+'"'+(_tesCaja===c.id?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
   var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(_tesFP===fp.id?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
 
@@ -3378,19 +3394,29 @@ async function renderTesoreria(){
     var fp=fps.find(x=>x.id===m.fpId);
     var bk=bancos.find(x=>x.id===m.bancoId);
     var cj=cajasAll.find(x=>x.id===m.cajaId);
-    var entNombre=m.entidad?esc(m.entidad.nombre):'—';
-    var destino=bk?esc(bk.nombre):cj?esc(cj.nombre):'—';
+    var entNombre,destino;
+    if(m._esTransf){
+      var oriNombre=m._bOrig?esc(m._bOrig.nombre):'?';
+      var dstNombre=m._bDest?esc(m._bDest.nombre):'?';
+      entNombre=oriNombre+' → '+dstNombre;
+      destino=m.dir==='out'?oriNombre:dstNombre;
+    } else {
+      entNombre=m.entidad?esc(m.entidad.nombre):'—';
+      destino=bk?esc(bk.nombre):cj?esc(cj.nombre):'—';
+    }
     var printId=m.imprimibleId||m.id;
-    var baseId=m._recId||m.id;
+    var baseId=m._recId||m._tsfId||m.id;
     var printBtn=m.imprimible==='recibo'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir recibo" onclick="imprimirComprobante(\'recibo\',\''+printId+'\')">🖨️</button>':'';
-    var delBtn='<button class="btn btn-ghost btn-sm btn-icon" title="Eliminar" onclick="eliminarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">🗑️</button>';
+    // Para transferencias: botón eliminar solo en el movimiento 'out' (evitar doble borrado)
+    var delBtn=m._esTransf&&m.dir==='in'?'':
+      '<button class="btn btn-ghost btn-sm btn-icon" title="Eliminar" onclick="eliminarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">🗑️</button>';
     var editBtn=(m.tabla==='recibos_cobro'||m.tabla==='ordenes_pago')?'<button class="btn btn-ghost btn-sm btn-icon" title="Editar" onclick="editarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">✏️</button>':'';
     return '<tr>'
       +'<td>'+esc(m.fecha)+'</td>'
-      +'<td>'+esc(m.subtipo)+'</td>'
+      +'<td>'+(m._esTransf?'<span style="color:var(--accent)">⇄ '+esc(m.subtipo)+'</span>':esc(m.subtipo))+'</td>'
       +'<td class="td-mono">'+esc(m.numero)+'</td>'
       +'<td>'+entNombre+'</td>'
-      +'<td>'+(fp?esc(fp.nombre):'—')+'</td>'
+      +'<td>'+(fp?esc(fp.nombre):m._esTransf?'<span style="color:var(--text2);font-size:12px">Transferencia</span>':'—')+'</td>'
       +'<td>'+destino+'</td>'
       +'<td class="td-mono td-r" style="color:var(--green)">'+(m.dir==='in'?fmtARS(m.importe):'—')+'</td>'
       +'<td class="td-mono td-r" style="color:var(--red)">'+(m.dir==='out'?fmtARS(m.importe):'—')+'</td>'
@@ -3406,7 +3432,7 @@ async function renderTesoreria(){
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Banco</label><select onchange="_tesBanco=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option>${bancosOpts}</select></div>
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Caja</label><select onchange="_tesCaja=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todas</option>${cajasOpts}</select></div>
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Forma de pago</label><select onchange="_tesFP=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todas</option>${fpOpts}</select></div>
-        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Tipo</label><select onchange="_tesTipo=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option><option value="Cobro"${_tesTipo==='Cobro'?' selected':''}>Cobranzas</option><option value="Pago"${_tesTipo==='Pago'?' selected':''}>Pagos</option></select></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Tipo</label><select onchange="_tesTipo=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option><option value="Cobro"${_tesTipo==='Cobro'?' selected':''}>Cobranzas</option><option value="Pago"${_tesTipo==='Pago'?' selected':''}>Pagos</option><option value="Transferencia"${_tesTipo==='Transferencia'?' selected':''}>Transferencias</option></select></div>
         <div class="fg" style="margin:0;flex:0 0 auto;align-self:flex-end"><button class="btn btn-ghost btn-sm" onclick="_tesDesde='';_tesHasta='';_tesBanco='';_tesCaja='';_tesFP='';_tesTipo='';renderTesoreria()">↺ Limpiar</button></div>
       </div>
     </div>
@@ -3423,6 +3449,7 @@ async function renderTesoreria(){
       <button class="btn btn-secondary btn-sm" onclick="exportarExcelTesoreria()">⬇ Excel</button>
       <button class="btn btn-secondary btn-sm" onclick="abrirCobroDirecto()">+ Registrar cobro</button>
       <button class="btn btn-secondary btn-sm" onclick="abrirPagoDirecto()">+ Registrar pago</button>
+      <button class="btn btn-secondary btn-sm" onclick="abrirTransferenciaBancaria()">⇄ Transferencia bancaria</button>
     </div>
 
     <div class="card mb24">
@@ -3687,6 +3714,57 @@ async function savePagoDirecto(){
   DB._clearCache(eid,'ordenes_pago');
   hideLoading();
   closeModal();toast('Pago registrado · '+numero,'success');renderTesoreria();
+}
+
+async function abrirTransferenciaBancaria(){
+  const eid=_empresa.id;
+  const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
+  if(bancos.length<2){toast('Se necesitan al menos 2 cuentas bancarias para realizar una transferencia.','error');return;}
+  var bkOpts=bancos.map(function(b){return '<option value="'+b.id+'">'+esc(b.nombre)+'</option>';}).join('');
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  const numTsf=nums.TSF||1;
+  const numero='TSF-'+String(numTsf).padStart(5,'0');
+  openModal('Transferencia entre cuentas bancarias',`
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Registrá el movimiento de fondos entre dos cuentas bancarias propias. Se generará un egreso en la cuenta origen y un ingreso en la cuenta destino.</p>
+    <div class="row2">
+      <div class="fg"><label>N° Transferencia</label><input value="${numero}" readonly></div>
+      <div class="fg"><label>Fecha *</label><input id="tsf-f" type="date" value="${today()}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Cuenta origen (egreso) *</label><select id="tsf-orig"><option value="">Seleccioná...</option>${bkOpts}</select></div>
+      <div class="fg"><label>Cuenta destino (ingreso) *</label><select id="tsf-dest"><option value="">Seleccioná...</option>${bkOpts}</select></div>
+    </div>
+    <div class="fg"><label>Importe *</label><input id="tsf-imp" type="number" step="0.01" placeholder="0.00"></div>
+    <div class="fg"><label>Observaciones</label><textarea id="tsf-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar transferencia',cls:'btn-primary',fn:'saveTransferenciaBancaria()'}]);
+}
+
+async function saveTransferenciaBancaria(){
+  const eid=_empresa.id;
+  const fecha=document.getElementById('tsf-f').value;
+  if(!fecha){toast('La fecha es obligatoria','error');return;}
+  const bancoOrigenId=document.getElementById('tsf-orig').value;
+  if(!bancoOrigenId){toast('Seleccioná la cuenta origen','error');return;}
+  const bancoDestinoId=document.getElementById('tsf-dest').value;
+  if(!bancoDestinoId){toast('Seleccioná la cuenta destino','error');return;}
+  if(bancoOrigenId===bancoDestinoId){toast('La cuenta origen y destino no pueden ser la misma','error');return;}
+  const importe=parseFloat(document.getElementById('tsf-imp').value)||0;
+  if(!importe||importe<=0){toast('El importe debe ser mayor a cero','error');return;}
+  if(await isMesCerrado(fecha)){toast('El período '+fecha.slice(0,7)+' está cerrado. No se pueden registrar operaciones.','error');return;}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  if(!nums.TSF)nums.TSF=1;
+  const numero='TSF-'+String(nums.TSF).padStart(5,'0');
+  nums.TSF++;
+  await DB.setCfg(eid,{nums});
+  const tsf={id:genId(),numero,fecha,bancoOrigenId,bancoDestinoId,importe,
+    observaciones:document.getElementById('tsf-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando transferencia...');
+  await DB.upsertItem(eid,'transferencias',tsf);
+  hideLoading();
+  closeModal();
+  toast('Transferencia registrada · '+numero,'success');
+  renderTesoreria();
 }
 
 async function recalcularEstados(){
@@ -4100,16 +4178,28 @@ async function guardarMovTesoreria(tabla,id){
 
 function exportarExcelTesoreria(){
   try{
-    const eid=_empresa.id;
-    const fps_cache=_movsFiltGlobal;
-    if(!fps_cache.length){toast('Sin movimientos para exportar','error');return}
+    if(!_movsFiltGlobal.length){toast('Sin movimientos para exportar','error');return}
     var aoa=[['Fecha','Tipo','N°','Entidad','Forma de pago','Banco/Caja','Ingreso','Egreso']];
-    _movsFiltGlobal.forEach(m=>{
+    _movsFiltGlobal.forEach(function(m){
+      var fp=_movsFiltFps.find(function(x){return x.id===m.fpId;});
+      var bk=_movsFiltBancos.find(function(x){return x.id===m.bancoId;});
+      var cj=_movsFiltCajas.find(function(x){return x.id===m.cajaId;});
+      var fpNombre='';
+      var bancoCajaNombre='—';
+      if(m._esTransf){
+        fpNombre='Transferencia';
+        bancoCajaNombre=m.dir==='out'?(m._bOrig?m._bOrig.nombre:'?'):(m._bDest?m._bDest.nombre:'?');
+      } else {
+        fpNombre=fp?fp.nombre:'';
+        bancoCajaNombre=bk?bk.nombre:cj?cj.nombre:'—';
+      }
       aoa.push([
-        m.fecha,m.subtipo,m.numero,
-        m.entidad?m.entidad.nombre:'—',
-        m.fpId||'',
-        m.bancoId||m.cajaId||'—',
+        m.fecha,
+        m.subtipo,
+        m.numero,
+        m.entidad?m.entidad.nombre:(m._esTransf?(m._bOrig?m._bOrig.nombre+' → '+(m._bDest?m._bDest.nombre:'?'):'—'):'—'),
+        fpNombre,
+        bancoCajaNombre,
         m.dir==='in'?m.importe:0,
         m.dir==='out'?m.importe:0,
       ]);
@@ -4745,6 +4835,463 @@ async function exportarExcelCC(clienteId,desde,hasta){
 }
 
 // ═══════════════════════════════════════════════════════════
+// MÓDULO CUENTAS CORRIENTES PROVEEDORES
+// ═══════════════════════════════════════════════════════════
+var _ccpQ='';
+var _ccpDesde='',_ccpHasta='';
+var _ccpSoloDeudor=false,_ccpSoloAcreedor=false,_ccpOcultarSinSaldo=false,_ccpOcultarSinMovs=false,_ccpSoloSinAplicar=false;
+async function renderCCProveedores(){
+  const _fSnap=_captureFocus();
+  const eid=_empresa.id;
+  const proveedores=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
+  const fcsAll=await DB.getE(eid,'facturas_compra');
+  const opsAll=await DB.getE(eid,'ordenes_pago');
+  var ncsAll=[];try{ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='compra');}catch(e){}
+
+  // Solo proveedores con CTA CTE o con movimientos
+  var proveedoresCC=proveedores.filter(function(pv){
+    var tieneMovs=fcsAll.some(f=>f.proveedorId===pv.id&&f.tipo==='cc')
+      ||opsAll.some(op=>op.proveedorId===pv.id);
+    return pv.condicionPago==='cc'||tieneMovs;
+  });
+  if(_ccpQ){
+    var q=_ccpQ.toLowerCase();
+    proveedoresCC=proveedoresCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));
+  }
+
+  const _hoy=today();
+  // En CTA CTE proveedor: Debe = lo que nos facturó (facturas_compra), Haber = lo que pagamos (ordenes_pago + ncs)
+  // Saldo positivo = debemos al proveedor; negativo = el proveedor nos debe a nosotros
+  function calcCCP(pv){
+    var fcs=fcsAll.filter(f=>f.proveedorId===pv.id&&f.tipo==='cc');
+    var ops=opsAll.filter(op=>op.proveedorId===pv.id);
+    var ncs=ncsAll.filter(n=>n.proveedorId===pv.id);
+    // saldo previo (antes del filtro de fecha)
+    var saldoPrevio=0;
+    if(_ccpDesde){
+      fcs.filter(f=>f.fecha<_ccpDesde).forEach(f=>{saldoPrevio+=f.total;});
+      ops.filter(op=>op.fecha<_ccpDesde).forEach(op=>{saldoPrevio-=op.importe;});
+      ncs.filter(n=>n.fecha<_ccpDesde).forEach(n=>{saldoPrevio-=n.importe;});
+    }
+    // en período
+    var fcsP=_ccpDesde?fcs.filter(f=>f.fecha>=_ccpDesde):fcs;
+    var opsP=_ccpDesde?ops.filter(op=>op.fecha>=_ccpDesde):ops;
+    var ncsP=_ccpDesde?ncs.filter(n=>n.fecha>=_ccpDesde):ncs;
+    if(_ccpHasta){fcsP=fcsP.filter(f=>f.fecha<=_ccpHasta);opsP=opsP.filter(op=>op.fecha<=_ccpHasta);ncsP=ncsP.filter(n=>n.fecha<=_ccpHasta);}
+    var debito=fcsP.reduce((s,f)=>s+f.total,0);  // lo que nos facturó
+    var credito=opsP.reduce((s,op)=>s+op.importe,0)+ncsP.reduce((s,n)=>s+n.importe,0); // lo que pagamos + ncs
+    var saldo=saldoPrevio+debito-credito;
+    var tieneMovs=(fcs.length+ops.length+ncs.length)>0;
+    // Calcular vencido vs no vencido
+    function fechaVencFC(f){
+      if(f.vencimiento)return f.vencimiento;
+      var dias=(pv.diasVenc)||30;
+      if(!f.fecha)return _hoy;
+      var d=new Date(f.fecha);d.setDate(d.getDate()+dias);
+      return d.toISOString().slice(0,10);
+    }
+    var fcsFiltradas=fcs.slice();
+    if(_ccpDesde)fcsFiltradas=fcsFiltradas.filter(f=>f.fecha>=_ccpDesde);
+    if(_ccpHasta)fcsFiltradas=fcsFiltradas.filter(f=>f.fecha<=_ccpHasta);
+    var saldoVencido=0,saldoNoVencido=0;
+    fcsFiltradas.forEach(function(f){
+      var yaImputado=ops.reduce(function(s,op){return s+(op.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+      var saldoFc=Math.max(0,f.total-yaImputado);
+      if(saldoFc<0.001)return;
+      if(fechaVencFC(f)<_hoy)saldoVencido+=saldoFc;
+      else saldoNoVencido+=saldoFc;
+    });
+    // Órdenes de pago con saldo sin aplicar
+    var saldoSinAplicar=ops.reduce(function(s,op){
+      var aplicado=(op.comprobantesAplicados||[]).reduce(function(a,c){return a+c.importeAplicado;},0);
+      return s+Math.max(0,op.importe-aplicado);
+    },0);
+    return {saldoPrevio,debito,credito,saldo,tieneMovs,saldoVencido,saldoNoVencido,saldoSinAplicar};
+  }
+
+  // Aplicar filtros de checkbox
+  var proveedoresFilt=proveedoresCC.filter(function(pv){
+    var d=calcCCP(pv);
+    if(_ccpOcultarSinMovs&&!d.tieneMovs)return false;
+    if(_ccpOcultarSinSaldo&&Math.abs(d.saldo)<0.001)return false;
+    if(_ccpSoloDeudor&&d.saldo<=0)return false;
+    if(_ccpSoloAcreedor&&d.saldo>=0)return false;
+    if(_ccpSoloSinAplicar&&d.saldoSinAplicar<0.001)return false;
+    return true;
+  });
+
+  var rows=proveedoresFilt.map(function(pv){
+    var d=calcCCP(pv);
+    var saldoCls=d.saldo>0?'color:var(--red)':d.saldo<0?'color:var(--green)':'color:var(--text2)';
+    var pid=pv.id;
+    var vencHtml=d.saldoVencido>0
+      ?'<br><span style="font-size:10px;color:var(--red);font-weight:600">⚠ Venc: '+fmtARS(d.saldoVencido)+'</span>'
+        +(d.saldoNoVencido>0?'<br><span style="font-size:10px;color:var(--text2)">A vencer: '+fmtARS(d.saldoNoVencido)+'</span>':'')
+      :(d.saldoNoVencido>0?'<br><span style="font-size:10px;color:var(--text2)">A vencer: '+fmtARS(d.saldoNoVencido)+'</span>':'');
+    return '<tr>'
+      +'<td><strong>'+esc(pv.nombre)+'</strong>'+(pv.cuit?'<br><span style="font-size:11px;color:var(--text2)">'+esc(pv.cuit)+'</span>':'')+'</td>'
+      +(_ccpDesde?'<td class="td-mono" style="font-size:12px;color:var(--text2)">'+fmtARS(d.saldoPrevio)+'</td>':'')
+      +'<td class="td-mono">'+fmtARS(d.debito)+'</td>'
+      +'<td class="td-mono">'+fmtARS(d.credito)+'</td>'
+      +'<td class="td-mono fw6" style="'+saldoCls+'">'+fmtARS(d.saldo)+vencHtml+'</td>'
+      +'<td><div class="td-act">'
+      +'<button class="btn btn-secondary btn-sm" onclick="verCCProveedor(\''+pid+'\',\''+(_ccpDesde||'')+'\',\''+(_ccpHasta||'')+'\')">Ver cuenta</button>'
+      +'</div></td>'
+      +'</tr>';
+  }).join('');
+
+  var totalSaldo=proveedoresFilt.reduce(function(s,pv){return s+calcCCP(pv).saldo;},0);
+  var totalDeb=proveedoresFilt.reduce(function(s,pv){return s+calcCCP(pv).debito;},0);
+  var totalCred=proveedoresFilt.reduce(function(s,pv){return s+calcCCP(pv).credito;},0);
+  var totalVencido=proveedoresFilt.reduce(function(s,pv){return s+calcCCP(pv).saldoVencido;},0);
+  var totalNoVencido=proveedoresFilt.reduce(function(s,pv){return s+calcCCP(pv).saldoNoVencido;},0);
+
+  var theadPrevio=_ccpDesde?'<th class="td-r">Saldo previo</th>':'';
+  var theadRow='<tr><th>Proveedor</th>'+theadPrevio+'<th class="td-r">Debe (facturas)</th><th class="td-r">Haber (pagos)</th><th class="td-r">Saldo · Vencimiento</th><th></th></tr>';
+
+  document.getElementById('main-content').innerHTML=`
+    <div class="g4 mb20" style="grid-template-columns:repeat(auto-fill,minmax(180px,1fr))">
+      <div class="stat-card"><div class="stat-lbl">Proveedores</div><div class="stat-val" style="color:var(--accent)">${proveedoresFilt.length}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Total débito</div><div class="stat-val" style="color:var(--red);font-size:16px">${fmtARS(totalDeb)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Total haber</div><div class="stat-val" style="color:var(--green);font-size:16px">${fmtARS(totalCred)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Saldo a pagar</div><div class="stat-val" style="color:${totalSaldo>=0?'var(--red)':'var(--green)'};font-size:16px">${fmtARS(Math.abs(totalSaldo))}</div></div>
+      ${totalVencido>0?`<div class="stat-card" style="border-color:var(--red-bd);background:var(--red-bg)"><div class="stat-lbl" style="color:var(--red)">⚠ Vencido</div><div class="stat-val" style="color:var(--red);font-size:16px">${fmtARS(totalVencido)}</div></div>`:''}
+      ${totalNoVencido>0?`<div class="stat-card"><div class="stat-lbl" style="color:var(--text2)">Por vencer</div><div class="stat-val" style="color:var(--yellow);font-size:16px">${fmtARS(totalNoVencido)}</div></div>`:''}
+    </div>
+    <div class="card mb16">
+      <div class="flex-c gap8 flex-wrap">
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Desde</label><input type="date" value="${_ccpDesde}" onchange="_ccpDesde=this.value;renderCCProveedores()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Hasta</label><input type="date" value="${_ccpHasta}" onchange="_ccpHasta=this.value;renderCCProveedores()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"></div>
+        <div class="fg" style="margin:0;flex:1;min-width:180px;align-self:flex-end"><div class="sw" style="position:relative"><span class="si" style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:var(--text3)">🔍</span><input value="${esc(_ccpQ)}" placeholder="Buscar proveedor..." oninput="_ccpQ=this.value;renderCCProveedores()" style="width:100%;padding:7px 10px 7px 32px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font);background:var(--surface)"></div></div>
+        <div class="fg" style="margin:0;flex:0 0 auto;align-self:flex-end"><button class="btn btn-ghost btn-sm" onclick="_ccpDesde='';_ccpHasta='';_ccpQ='';renderCCProveedores()">↺ Limpiar</button></div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccpSoloDeudor?'checked':''} onchange="_ccpSoloDeudor=this.checked;if(_ccpSoloDeudor)_ccpSoloAcreedor=false;renderCCProveedores()"> Solo saldo deudor (debemos)</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccpSoloAcreedor?'checked':''} onchange="_ccpSoloAcreedor=this.checked;if(_ccpSoloAcreedor)_ccpSoloDeudor=false;renderCCProveedores()"> Solo saldo acreedor (a favor nuestro)</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccpOcultarSinSaldo?'checked':''} onchange="_ccpOcultarSinSaldo=this.checked;renderCCProveedores()"> Ocultar sin saldo</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccpOcultarSinMovs?'checked':''} onchange="_ccpOcultarSinMovs=this.checked;renderCCProveedores()"> Ocultar sin movimientos</label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px"><input type="checkbox" ${_ccpSoloSinAplicar?'checked':''} onchange="_ccpSoloSinAplicar=this.checked;renderCCProveedores()"> Solo con pagos sin imputar</label>
+      </div>
+    </div>
+    <div class="toolbar mb12" style="padding:0">
+      <div style="flex:1;font-size:14px;font-weight:600">Cuentas corrientes proveedores${_ccpDesde||_ccpHasta?' · período filtrado':''}</div>
+      <button class="btn btn-secondary btn-sm" onclick="exportarExcelCCProveedorGlobal()">⬇ Excel</button>
+    </div>
+    ${proveedoresFilt.length?`<div class="tw"><table><thead>${theadRow}</thead>
+    <tbody>${rows}</tbody></table></div>`
+    :`<div class="empty"><div class="ei">📋</div><h3>Sin cuentas corrientes</h3><p>Los proveedores con condición CC aparecerán aquí</p></div>`}`;
+  _restoreFocus(_fSnap,document.getElementById('main-content'));
+}
+
+async function verCCProveedor(proveedorId,desde,hasta){
+  const eid=_empresa.id;
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===proveedorId);if(!pv)return;
+  const fcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===proveedorId&&f.tipo==='cc');
+  const ops=(await DB.getE(eid,'ordenes_pago')).filter(op=>op.proveedorId===proveedorId);
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===proveedorId&&n.tipo==='compra');}catch(e){}
+  const allMovs=[
+    ...fcs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0,id:f.id,tabla:'facturas_compra'})),
+    ...ops.map(op=>({fecha:op.fecha,tipo:'Orden de Pago',numero:op.numero,debito:0,credito:op.importe,id:op.id,tabla:'ordenes_pago'})),
+    ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota crédito',numero:n.numero,debito:0,credito:n.importe,id:n.id,tabla:'notas_credito'})),
+  ].sort((a,b)=>a.fecha<b.fecha?-1:1);
+  let saldoPrevio=0;
+  var movsFiltrados=allMovs;
+  if(desde){
+    allMovs.filter(m=>m.fecha<desde).forEach(m=>{saldoPrevio+=m.debito-m.credito;});
+    movsFiltrados=allMovs.filter(m=>m.fecha>=desde);
+  }
+  if(hasta){movsFiltrados=movsFiltrados.filter(m=>m.fecha<=hasta);}
+  movsFiltrados.sort((a,b)=>a.fecha>b.fecha?-1:1);
+  const movsAsc=[...movsFiltrados].sort((a,b)=>a.fecha<b.fecha?-1:1);
+  let s=saldoPrevio;
+  const saldoMap={};
+  movsAsc.forEach((m,i)=>{s+=m.debito-m.credito;saldoMap[i]=s;});
+  const saldoFinal=s;
+  const rows=movsFiltrados.map((m,i)=>{
+    const idx=movsAsc.findIndex(x=>x.fecha===m.fecha&&x.numero===m.numero&&x.tipo===m.tipo);
+    return Object.assign({},m,{saldo:saldoMap[idx]});
+  });
+  var pid=proveedorId;
+  var desdeDef=desde||'';var hastaDef=hasta||today();
+  openModal('CC Proveedor · '+esc(pv.nombre),`
+    <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px">
+      <div class="fg" style="margin:0;flex:1;min-width:120px"><label style="font-size:12px;font-weight:500;color:var(--text2);display:block;margin-bottom:4px">Desde</label><input id="ccp-desde" type="date" value="${desdeDef}" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-sm);font-family:var(--font);width:100%;outline:none;background:var(--surface)"></div>
+      <div class="fg" style="margin:0;flex:1;min-width:120px"><label style="font-size:12px;font-weight:500;color:var(--text2);display:block;margin-bottom:4px">Hasta</label><input id="ccp-hasta" type="date" value="${hastaDef}" style="padding:6px 10px;border:1px solid var(--border);border-radius:var(--r-sm);font-family:var(--font);width:100%;outline:none;background:var(--surface)"></div>
+      <button class="btn btn-secondary btn-sm" onclick="closeModal();verCCProveedor('${pid}',document.getElementById('ccp-desde')?.value||'',document.getElementById('ccp-hasta')?.value||'')" style="flex-shrink:0">Filtrar</button>
+      <button class="btn btn-ghost btn-sm" onclick="closeModal();verCCProveedor('${pid}')" style="flex-shrink:0">Ver todo</button>
+    </div>
+    ${(desde||hasta)?`<div style="background:var(--accent-bg);border:1px solid var(--accent-border);border-radius:var(--r-sm);padding:8px 12px;margin-bottom:10px;font-size:13px;display:flex;justify-content:space-between;align-items:center"><span style="color:var(--text2)">Saldo acumulado anterior al período:</span><span style="font-family:var(--mono);font-weight:600;color:${saldoPrevio>0?'var(--red)':saldoPrevio<0?'var(--green)':'var(--text)'};">${fmtARS(saldoPrevio)}</span></div>`:''}
+    ${rows.length?`<div class="tw"><table><thead><tr><th>Fecha</th><th>Tipo</th><th>N°</th><th class="td-r">Debe (factura)</th><th class="td-r">Haber (pago)</th><th class="td-r">Saldo acum.</th><th></th></tr></thead>
+    <tbody>`+rows.map(function(r){
+      return '<tr>'
+        +'<td>'+esc(r.fecha)+'</td><td>'+esc(r.tipo)+'</td><td class="td-mono">'+esc(r.numero)+'</td>'
+        +'<td class="td-mono td-r" style="color:var(--red)">'+(r.debito?fmtARS(r.debito):'—')+'</td>'
+        +'<td class="td-mono td-r" style="color:var(--green)">'+(r.credito?fmtARS(r.credito):'—')+'</td>'
+        +'<td class="td-mono td-r" style="font-weight:600;color:'+(r.saldo>0?'var(--red)':r.saldo<0?'var(--green)':'var(--text)')+'">'+fmtARS(r.saldo)+'</td>'
+        +'<td><div class="td-act">'+(r.tabla==='facturas_compra'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir factura" onclick="imprimirComprobante(\'fc\',\''+r.id+'\')">🖨️</button>':r.tabla==='ordenes_pago'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir OP" onclick="imprimirComprobante(\'op\',\''+r.id+'\')">🖨️</button>':'')+'</div></td>'
+        +'</tr>';
+    }).join('')+`</tbody></table></div>`
+    :`<div class="empty" style="padding:24px"><p>Sin movimientos en el período seleccionado</p></div>`}
+    <div style="text-align:right;margin-top:12px;font-size:14px;font-weight:600">Saldo ${(desde||hasta)?'al cierre del período':'actual'}: <span style="font-family:var(--mono);color:${saldoFinal>0?'var(--red)':saldoFinal<0?'var(--green)':'var(--text)'}">${fmtARS(saldoFinal)}</span></div>
+  `,[{lbl:'Cerrar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'⚡ Aplicar imputaciones',cls:'btn-secondary',fn:'closeModal();abrirAplicacionCCProveedor(\''+proveedorId+'\')'},{lbl:'🖨️ Imprimir CC',cls:'btn-secondary',fn:'var _d=document.getElementById(\'ccp-desde\')?.value||\'\',_h=document.getElementById(\'ccp-hasta\')?.value||\'\';closeModal();imprimirCCProveedor(\''+proveedorId+'\',_d,_h)'},{lbl:'⬇ Excel CC',cls:'btn-secondary',fn:'var _d=document.getElementById(\'ccp-desde\')?.value||\'\',_h=document.getElementById(\'ccp-hasta\')?.value||\'\';exportarExcelCCProveedor(\''+proveedorId+'\',_d,_h)'}],true);
+}
+
+async function imprimirCCProveedor(proveedorId,desde,hasta){
+  const eid=_empresa.id;
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===proveedorId);if(!pv)return;
+  const fcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===proveedorId&&f.tipo==='cc');
+  const ops=(await DB.getE(eid,'ordenes_pago')).filter(op=>op.proveedorId===proveedorId);
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===proveedorId&&n.tipo==='compra');}catch(e){}
+  const allMovs=[
+    ...fcs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
+    ...ops.map(op=>({fecha:op.fecha,tipo:'Orden de Pago',numero:op.numero,debito:0,credito:op.importe})),
+    ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota Crédito',numero:n.numero,debito:0,credito:n.importe})),
+  ].sort((a,b)=>a.fecha<b.fecha?-1:1);
+  let saldoPrevio=0;
+  var movsFiltrados=allMovs;
+  if(desde){
+    allMovs.filter(m=>m.fecha<desde).forEach(m=>{saldoPrevio+=m.debito-m.credito;});
+    movsFiltrados=allMovs.filter(m=>m.fecha>=desde);
+  }
+  if(hasta){movsFiltrados=movsFiltrados.filter(m=>m.fecha<=hasta);}
+  let saldo=saldoPrevio;
+  var rowsCC=movsFiltrados.map(function(m){saldo+=m.debito-m.credito;
+    return '<tr><td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.fecha)+'</td>'
+      +'<td style="padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.tipo)+'</td>'
+      +'<td style="font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0">'+esc(m.numero)+'</td>'
+      +'<td style="text-align:right;font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:#dc2626">'+(m.debito?fmtARS(m.debito):'—')+'</td>'
+      +'<td style="text-align:right;font-family:monospace;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:#16a34a">'+(m.credito?fmtARS(m.credito):'—')+'</td>'
+      +'<td style="text-align:right;font-family:monospace;font-weight:600;padding:5px 8px;font-size:12px;border-bottom:1px solid #e2e8f0;color:'+(saldo>0?'#dc2626':saldo<0?'#16a34a':'#334155')+'">'+fmtARS(saldo)+'</td>'
+      +'</tr>';
+  }).join('');
+  var periodoLabel=(desde||hasta)?'Período: '+(desde||'inicio')+' al '+(hasta||'hoy'):'Histórico completo';
+  var html='<h2 style="font-size:18px;font-weight:700;margin-bottom:12px">CUENTA CORRIENTE PROVEEDOR · '+esc(pv.nombre)+'</h2>'
+    +_empresaHeader()
+    +'<p style="font-size:12px;color:#64748b;margin-bottom:6px">'+periodoLabel+'</p>'
+    +'<p style="font-size:12px;color:#64748b;margin-bottom:14px">Emitido: '+today()+'</p>'
+    +(desde&&saldoPrevio!==0?'<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:4px;padding:8px 12px;margin-bottom:12px;font-size:12px;display:flex;justify-content:space-between"><span style="color:#64748b">Saldo acumulado anterior al período:</span><span style="font-family:monospace;font-weight:600;color:'+(saldoPrevio>0?'#dc2626':'#16a34a')+'">'+fmtARS(saldoPrevio)+'</span></div>':'')
+    +'<table style="width:100%;border-collapse:collapse"><thead><tr style="background:#f1f5f9">'
+    +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Fecha</th>'
+    +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Tipo</th>'
+    +'<th style="text-align:left;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">N°</th>'
+    +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Debe (factura)</th>'
+    +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Haber (pago)</th>'
+    +'<th style="text-align:right;padding:7px 8px;font-size:11px;border-bottom:1px solid #cbd5e1">Saldo</th>'
+    +'</tr></thead><tbody>'+rowsCC+'</tbody></table>'
+    +'<div style="text-align:right;font-size:15px;font-weight:700;margin-top:12px;padding-top:8px;border-top:2px solid #334155;color:'+(saldo>0?'#dc2626':saldo<0?'#16a34a':'#334155')+'">Saldo: '+fmtARS(saldo)+'</div>';
+  abrirVentanaImpresion(html);
+}
+
+async function exportarExcelCCProveedorGlobal(){
+  try{
+    const eid=_empresa.id;
+    const proveedores=(await DB.getE(eid,'proveedores')).filter(x=>x.activo);
+    const fcsAll=await DB.getE(eid,'facturas_compra');
+    const opsAll=await DB.getE(eid,'ordenes_pago');
+    var ncsAll=[];try{ncsAll=(await DB.getE(eid,'notas_credito')).filter(x=>x.tipo==='compra');}catch(e){}
+    var proveedoresCC=proveedores.filter(function(pv){
+      return pv.condicionPago==='cc'||fcsAll.some(f=>f.proveedorId===pv.id&&f.tipo==='cc')||opsAll.some(op=>op.proveedorId===pv.id);
+    });
+    if(_ccpQ){var q=_ccpQ.toLowerCase();proveedoresCC=proveedoresCC.filter(x=>x.nombre.toLowerCase().includes(q)||(x.cuit||'').includes(q));}
+    function calcCCP2(pv){
+      var fcs=fcsAll.filter(f=>f.proveedorId===pv.id&&f.tipo==='cc');
+      var ops=opsAll.filter(op=>op.proveedorId===pv.id);
+      var ncs=ncsAll.filter(n=>n.proveedorId===pv.id);
+      var saldoPrevio=0;
+      if(_ccpDesde){fcs.filter(f=>f.fecha<_ccpDesde).forEach(f=>{saldoPrevio+=f.total;});ops.filter(op=>op.fecha<_ccpDesde).forEach(op=>{saldoPrevio-=op.importe;});ncs.filter(n=>n.fecha<_ccpDesde).forEach(n=>{saldoPrevio-=n.importe;});}
+      var fcsP=_ccpDesde?fcs.filter(f=>f.fecha>=_ccpDesde):fcs;var opsP=_ccpDesde?ops.filter(op=>op.fecha>=_ccpDesde):ops;var ncsP=_ccpDesde?ncs.filter(n=>n.fecha>=_ccpDesde):ncs;
+      if(_ccpHasta){fcsP=fcsP.filter(f=>f.fecha<=_ccpHasta);opsP=opsP.filter(op=>op.fecha<=_ccpHasta);ncsP=ncsP.filter(n=>n.fecha<=_ccpHasta);}
+      var debito=fcsP.reduce((s,f)=>s+f.total,0);var credito=opsP.reduce((s,op)=>s+op.importe,0)+ncsP.reduce((s,n)=>s+n.importe,0);
+      var saldo=saldoPrevio+debito-credito;
+      var tieneMovs=(fcs.length+ops.length+ncs.length)>0;
+      return {saldoPrevio,debito,credito,saldo,tieneMovs};
+    }
+    var provFilt=proveedoresCC.filter(function(pv){
+      var d=calcCCP2(pv);
+      if(_ccpOcultarSinMovs&&!d.tieneMovs)return false;
+      if(_ccpOcultarSinSaldo&&Math.abs(d.saldo)<0.001)return false;
+      if(_ccpSoloDeudor&&d.saldo<=0)return false;
+      if(_ccpSoloAcreedor&&d.saldo>=0)return false;
+      return true;
+    });
+    var header=_ccpDesde?['Proveedor','CUIT','Saldo previo','Debe (facturas)','Haber (pagos)','Saldo']:['Proveedor','CUIT','Debe (facturas)','Haber (pagos)','Saldo'];
+    var aoa=[header];
+    provFilt.forEach(function(pv){
+      var d=calcCCP2(pv);
+      if(_ccpDesde)aoa.push([pv.nombre,pv.cuit||'',d.saldoPrevio,d.debito,d.credito,d.saldo]);
+      else aoa.push([pv.nombre,pv.cuit||'',d.debito,d.credito,d.saldo]);
+    });
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb,ws,'CC Proveedores');
+    XLSX.writeFile(wb,'CC_Proveedores_'+today()+'.xlsx');
+    toast('Excel descargado','success');
+  }catch(e){toast('Error al exportar: '+e.message,'error');}
+}
+
+async function exportarExcelCCProveedor(proveedorId,desde,hasta){
+  try{
+    const eid=_empresa.id;
+    const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===proveedorId);if(!pv)return;
+    const fcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===proveedorId&&f.tipo==='cc');
+    const ops=(await DB.getE(eid,'ordenes_pago')).filter(op=>op.proveedorId===proveedorId);
+    var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===proveedorId&&n.tipo==='compra');}catch(e){}
+    const allMovs=[
+      ...fcs.map(f=>({fecha:f.fecha,tipo:'Factura',numero:f.numero,debito:f.total,credito:0})),
+      ...ops.map(op=>({fecha:op.fecha,tipo:'Orden de Pago',numero:op.numero,debito:0,credito:op.importe})),
+      ...ncs.map(n=>({fecha:n.fecha,tipo:'Nota Crédito',numero:n.numero,debito:0,credito:n.importe})),
+    ].sort((a,b)=>a.fecha<b.fecha?-1:1);
+    let saldoPrevio=0;var movsFiltrados=allMovs;
+    if(desde){allMovs.filter(m=>m.fecha<desde).forEach(m=>{saldoPrevio+=m.debito-m.credito;});movsFiltrados=allMovs.filter(m=>m.fecha>=desde);}
+    if(hasta){movsFiltrados=movsFiltrados.filter(m=>m.fecha<=hasta);}
+    let saldo=saldoPrevio;
+    var periodoLabel=(desde||hasta)?((desde||'inicio')+' al '+(hasta||'hoy')):'Histórico completo';
+    var aoa=[
+      ['Cuenta Corriente Proveedor: '+pv.nombre],
+      ['Período: '+periodoLabel],
+      [],
+      ['Fecha','Tipo','N°','Debe (factura)','Haber (pago)','Saldo acumulado'],
+    ];
+    if(desde&&saldoPrevio!==0)aoa.push(['','','Saldo anterior al período','','',saldoPrevio]);
+    movsFiltrados.forEach(m=>{saldo+=m.debito-m.credito;aoa.push([m.fecha,m.tipo,m.numero,m.debito||0,m.credito||0,saldo]);});
+    aoa.push([]);aoa.push(['Saldo final','','','','',saldo]);
+    const wb=XLSX.utils.book_new();
+    const ws=XLSX.utils.aoa_to_sheet(aoa);
+    XLSX.utils.book_append_sheet(wb,ws,'CC');
+    XLSX.writeFile(wb,'CC_Prov_'+pv.nombre.replace(/\s+/g,'_')+'_'+today()+'.xlsx');
+    toast('Excel descargado','success');
+  }catch(e){toast('Error al exportar Excel: '+e.message,'error');}
+}
+
+// ─── Aplicación de CC Proveedores ───────────────────────────
+async function abrirAplicacionCCProveedor(proveedorId){
+  const eid=_empresa.id;
+  const pv=(await DB.getE(eid,'proveedores')).find(x=>x.id===proveedorId);
+  if(!pv)return;
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===proveedorId&&n.tipo==='compra');}catch(e){}
+  const ops=await DB.getE(eid,'ordenes_pago');
+  // Calcular saldo real de cada factura usando comprobantesAplicados
+  const fcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===proveedorId&&f.tipo==='cc').map(function(f){
+    var yaImputado=ops.reduce(function(s,op){return s+(op.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+    return Object.assign({},f,{saldoPend:Math.max(0,f.total-yaImputado)});
+  }).filter(function(f){return f.saldoPend>0.001;});
+  // Órdenes de pago con saldo disponible
+  var opsSaldo=ops.filter(function(op){
+    if(op.proveedorId!==proveedorId)return false;
+    var aplicado=(op.comprobantesAplicados||[]).reduce(function(s,c){return s+c.importeAplicado;},0);
+    return op.importe-aplicado>0.001;
+  }).map(function(op){
+    var aplicado=(op.comprobantesAplicados||[]).reduce(function(s,c){return s+c.importeAplicado;},0);
+    return Object.assign({},op,{saldo:op.importe-aplicado});
+  });
+  var ncsConSaldo=ncs.filter(function(n){
+    var aplicado=ops.reduce(function(s,op){return s+(op.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
+    return n.importe-aplicado>0.001;
+  }).map(function(n){
+    var aplicado=ops.reduce(function(s,op){return s+(op.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
+    return Object.assign({},n,{saldo:n.importe-aplicado});
+  });
+
+  // Panel izquierdo: créditos disponibles (pagos y NC)
+  var creditRows=opsSaldo.map(function(op){
+    return '<tr><td><input type="checkbox" class="aplp-cred-check" value="'+op.id+'" data-tipo="op" data-num="'+esc(op.numero)+'" data-saldo="'+op.saldo+'" onchange="aplpCredToggle(this)"></td>'
+      +'<td style="font-size:12px">'+esc(op.numero)+'</td><td style="font-size:12px">Ord. Pago</td>'
+      +'<td style="font-size:12px;text-align:right;font-family:monospace;color:var(--green)">'+fmtARS(op.saldo)+'</td>'
+      +'<td><input id="aplp-cred-imp-'+op.id+'" type="number" step="0.01" value="'+op.saldo+'" style="width:90px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';
+  }).join('');
+  creditRows+=ncsConSaldo.map(function(n){
+    return '<tr><td><input type="checkbox" class="aplp-cred-check" value="'+n.id+'" data-tipo="nc" data-num="'+esc(n.numero)+'" data-saldo="'+n.saldo+'" onchange="aplpCredToggle(this)"></td>'
+      +'<td style="font-size:12px">'+esc(n.numero)+'</td><td style="font-size:12px">Nota crédito</td>'
+      +'<td style="font-size:12px;text-align:right;font-family:monospace;color:var(--green)">'+fmtARS(n.saldo)+'</td>'
+      +'<td><input id="aplp-cred-imp-'+n.id+'" type="number" step="0.01" value="'+n.saldo+'" style="width:90px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';
+  }).join('');
+
+  // Panel derecho: débitos pendientes (facturas de compra)
+  var debitRows=fcs.map(function(f){
+    return '<tr><td><input type="checkbox" class="aplp-deb-check" value="'+f.id+'" data-num="'+esc(f.numero)+'" data-total="'+f.saldoPend+'"></td>'
+      +'<td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px;text-align:right;font-family:monospace;color:var(--red)">'+fmtARS(f.saldoPend)+'</td></tr>';
+  }).join('');
+
+  if(!creditRows&&!debitRows){
+    toast('No hay operaciones pendientes para aplicar en esta cuenta corriente.','info');return;
+  }
+
+  openModal('Aplicar operaciones CC · '+esc(pv.nombre),`
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Seleccioná los créditos disponibles (pagos / notas de crédito) y las facturas pendientes que querés imputar entre sí.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--green);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Créditos disponibles</div>
+        ${creditRows?`<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)"><th style="padding:5px 7px;font-size:11px"></th><th style="padding:5px 7px;font-size:11px">N°</th><th style="padding:5px 7px;font-size:11px">Tipo</th><th style="padding:5px 7px;font-size:11px;text-align:right">Saldo</th><th style="padding:5px 7px;font-size:11px">A aplicar</th></tr></thead><tbody>${creditRows}</tbody></table></div>`
+        :'<p style="font-size:12px;color:var(--text2)">Sin créditos disponibles</p>'}
+      </div>
+      <div>
+        <div style="font-size:12px;font-weight:600;color:var(--red);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Facturas pendientes</div>
+        ${debitRows?`<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden"><table style="width:100%;border-collapse:collapse"><thead><tr style="background:var(--surface2)"><th style="padding:5px 7px;font-size:11px"></th><th style="padding:5px 7px;font-size:11px">N°</th><th style="padding:5px 7px;font-size:11px;text-align:right">Saldo pendiente</th></tr></thead><tbody>${debitRows}</tbody></table></div>`
+        :'<p style="font-size:12px;color:var(--text2)">Sin facturas pendientes</p>'}
+      </div>
+    </div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Aplicar imputación',cls:'btn-primary',fn:'guardarAplicacionCCProveedor(\''+proveedorId+'\')'}],true);
+}
+
+function aplpCredToggle(cb){
+  var inp=document.getElementById('aplp-cred-imp-'+cb.value);
+  if(inp)inp.disabled=!cb.checked;
+}
+
+async function guardarAplicacionCCProveedor(proveedorId){
+  const eid=_empresa.id;
+  var credSelects=document.querySelectorAll('.aplp-cred-check:checked');
+  if(!credSelects.length){toast('Seleccioná al menos un crédito a aplicar','error');return;}
+  var debSelects=document.querySelectorAll('.aplp-deb-check:checked');
+  if(!debSelects.length){toast('Seleccioná al menos una factura a imputar','error');return;}
+
+  showLoading('Aplicando imputaciones...');
+  const ops=await DB.getE(eid,'ordenes_pago');
+  const fcs=await DB.getE(eid,'facturas_compra');
+
+  for(var i=0;i<credSelects.length;i++){
+    var cb=credSelects[i];
+    var inp=document.getElementById('aplp-cred-imp-'+cb.value);
+    var impApl=inp?parseFloat(inp.value)||0:0;
+    if(!impApl)continue;
+    if(cb.dataset.tipo==='op'){
+      var op=ops.find(x=>x.id===cb.value);
+      if(!op)continue;
+      var compApls=op.comprobantesAplicados||[];
+      var restante=impApl;
+      debSelects.forEach(function(db){
+        if(restante<=0)return;
+        var fac=fcs.find(x=>x.id===db.value);
+        if(!fac)return;
+        var ya=ops.reduce(function(s,o){return s+(o.comprobantesAplicados||[]).filter(function(c){return c.id===fac.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+        var pendiente=fac.total-ya;
+        var aplicar=Math.min(restante,pendiente);
+        if(aplicar>0.001){compApls.push({id:fac.id,tipo:'fc',numero:fac.numero,importeAplicado:aplicar});restante-=aplicar;}
+      });
+      await DB.upsertItem(eid,'ordenes_pago',Object.assign({},op,{comprobantesAplicados:compApls}));
+    }
+  }
+
+  // Marcar facturas como pagadas si su saldo queda cubierto
+  DB._clearCache(eid,'ordenes_pago');
+  const opsUpd=await DB.getE(eid,'ordenes_pago');
+  for(var j=0;j<debSelects.length;j++){
+    var facId=debSelects[j].value;
+    var fac=fcs.find(x=>x.id===facId);
+    if(!fac)continue;
+    var pagado=opsUpd.reduce(function(s,op){return s+(op.comprobantesAplicados||[]).filter(c=>c.id===facId).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
+    if(pagado>=fac.total-0.001){
+      await DB.upsertItem(eid,'facturas_compra',Object.assign({},fac,{estado:'pagada',fechaPago:today()}));
+    }
+  }
+
+  hideLoading();
+  closeModal();
+  toast('Imputaciones aplicadas correctamente','success');
+  if(_section==='cc-proveedores')renderCCProveedores();
+}
+
+// ═══════════════════════════════════════════════════════════
 // NOTAS DE CRÉDITO
 // ═══════════════════════════════════════════════════════════
 async function abrirNotaCreditoCliente(clienteId){
@@ -5136,16 +5683,21 @@ async function cargarCompsPendientesProveedor(provId,contId){
   if(!cont)return;
   if(!provId){cont.innerHTML='';return;}
   const eid=_empresa.id;
-  const fcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===provId&&f.tipo==='cc'&&f.estado!=='pagada');
-  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===provId&&n.tipo==='compra');}catch(e){}
   var ops=await DB.getE(eid,'ordenes_pago');
+  // Calcular saldo real de cada factura usando comprobantesAplicados (igual que cargarCompsPendientesCliente)
+  var todasFcs=(await DB.getE(eid,'facturas_compra')).filter(f=>f.proveedorId===provId&&f.tipo==='cc');
+  var fcsConSaldo=todasFcs.map(function(f){
+    var yaImputado=ops.reduce(function(s,o){return s+(o.comprobantesAplicados||[]).filter(function(c){return c.id===f.id;}).reduce(function(a,c){return a+(parseFloat(c.importeAplicado)||0);},0);},0);
+    return Object.assign({},f,{saldoPend:Math.max(0,f.total-yaImputado)});
+  }).filter(function(f){return f.saldoPend>0.001;});
+  var ncs=[];try{ncs=(await DB.getE(eid,'notas_credito')).filter(n=>n.proveedorId===provId&&n.tipo==='compra');}catch(e){}
   var ncsConSaldo=ncs.filter(function(n){
     var aplicado=ops.reduce(function(s,o){return s+(o.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
     return n.importe-aplicado>0.001;
   });
-  if(!fcs.length&&!ncsConSaldo.length){cont.innerHTML='<p style="font-size:12px;color:var(--text2);margin-top:6px">Sin comprobantes pendientes para este proveedor.</p>';return;}
+  if(!fcsConSaldo.length&&!ncsConSaldo.length){cont.innerHTML='<p style="font-size:12px;color:var(--text2);margin-top:6px">Sin comprobantes pendientes para este proveedor.</p>';return;}
   var rows='';
-  fcs.forEach(function(f){rows+='<tr><td><input type="checkbox" class="pd-comp-check" value="'+f.id+'" data-tipo="fc" data-num="'+esc(f.numero)+'" data-total="'+f.total+'" onchange="cdCompToggle(this,\'pd\')"></td><td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px">Factura compra</td><td style="font-size:12px;text-align:right;font-family:monospace">'+fmtARS(f.total)+'</td><td><input id="pd-comp-imp-'+f.id+'" type="number" step="0.01" value="'+f.total+'" style="width:100px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';});
+  fcsConSaldo.forEach(function(f){rows+='<tr><td><input type="checkbox" class="pd-comp-check" value="'+f.id+'" data-tipo="fc" data-num="'+esc(f.numero)+'" data-total="'+f.saldoPend+'" onchange="cdCompToggle(this,\'pd\')"></td><td style="font-size:12px">'+esc(f.numero)+'</td><td style="font-size:12px">Factura compra</td><td style="font-size:12px;text-align:right;font-family:monospace">'+fmtARS(f.saldoPend)+'</td><td><input id="pd-comp-imp-'+f.id+'" type="number" step="0.01" value="'+f.saldoPend+'" style="width:100px;padding:3px 6px;border:1px solid var(--border);border-radius:4px;font-size:12px" disabled></td></tr>';});
   ncsConSaldo.forEach(function(n){
     var aplicado=ops.reduce(function(s,o){return s+(o.comprobantesAplicados||[]).filter(c=>c.id===n.id).reduce(function(a,c){return a+c.importeAplicado;},0);},0);
     var saldo=n.importe-aplicado;
