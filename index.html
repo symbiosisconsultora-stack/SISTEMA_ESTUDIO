@@ -505,7 +505,7 @@ const FIELD_TO_DB = {
   proveedores:     { rubroId:'rubro_id', condicionPago:'condicion_pago', diasVenc:'dias_venc' },
   transferencias:  { bancoOrigenId:'banco_origen_id', bancoDestinoId:'banco_destino_id', fechaCreacion:'fecha_creacion' },
   traspasos_caja:  { cajaOrigenId:'caja_origen_id', cajaDestinoId:'caja_destino_id', fechaCreacion:'fecha_creacion' },
-  retiros:         { fechaCreacion:'fecha_creacion' },
+  retiros:         { bancoId:'banco_id', cajaId:'caja_id', fechaCreacion:'fecha_creacion' },
   productos_venta: { rubroId:'rubro_id' },
   productos_compra:{ rubroId:'rubro_id' },
   bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
