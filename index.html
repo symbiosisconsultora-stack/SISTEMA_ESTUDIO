@@ -495,6 +495,8 @@ const TABLE_MAP = {
   liquidaciones_sueldo: 'liquidaciones_sueldo',
   pagos_sueldo:         'pagos_sueldo',
   transferencias:       'transferencias',
+  traspasos_caja:       'traspasos_caja',
+  retiros:              'retiros',
 };
 
 // Campos snake_case ↔ camelCase por tabla
@@ -502,6 +504,8 @@ const FIELD_TO_DB = {
   clientes:        { condicionIva:'condicion_iva', condicionCobro:'condicion_cobro', diasVenc:'dias_venc', serviciosHabituales:'servicios_habituales', abonos:'abonos' },
   proveedores:     { rubroId:'rubro_id', condicionPago:'condicion_pago', diasVenc:'dias_venc' },
   transferencias:  { bancoOrigenId:'banco_origen_id', bancoDestinoId:'banco_destino_id', fechaCreacion:'fecha_creacion' },
+  traspasos_caja:  { cajaOrigenId:'caja_origen_id', cajaDestinoId:'caja_destino_id', fechaCreacion:'fecha_creacion' },
+  retiros:         { fechaCreacion:'fecha_creacion' },
   productos_venta: { rubroId:'rubro_id' },
   productos_compra:{ rubroId:'rubro_id' },
   bancos:          { numeroCuenta:'numero_cuenta', saldoInicial:'saldo_inicial' },
@@ -532,6 +536,8 @@ const TABLE_COLS = {
   formas_pago:     new Set(['id','empresa_id','nombre','tipo','activo']),
   cajas:           new Set(['id','empresa_id','nombre','tipo','activo']),
   transferencias:  new Set(['id','empresa_id','numero','fecha','banco_origen_id','banco_destino_id','importe','observaciones','fecha_creacion']),
+  traspasos_caja:  new Set(['id','empresa_id','numero','fecha','caja_origen_id','caja_destino_id','importe','observaciones','fecha_creacion']),
+  retiros:         new Set(['id','empresa_id','numero','fecha','banco_id','caja_id','importe','persona','observaciones','fecha_creacion']),
 };
 const FIELD_FROM_DB = {};
 Object.entries(FIELD_TO_DB).forEach(([tbl, map]) => {
@@ -3330,6 +3336,7 @@ async function savePagoRapido(facId){
 var _tesDesde='',_tesHasta='',_tesBanco='',_tesCaja='',_tesFP='',_tesTipo='';
 var _movsFiltGlobal=[];
 var _movsFiltFps=[];var _movsFiltBancos=[];var _movsFiltCajas=[];
+var _movsFiltSaldoInicial=0;
 async function renderTesoreria(){
   const eid=_empresa.id;
   if(!_tesDesde)_tesDesde=today().slice(0,7)+'-01';
@@ -3343,6 +3350,9 @@ async function renderTesoreria(){
   const clientes=await DB.getE(eid,'clientes');
   const proveedores=await DB.getE(eid,'proveedores');
   var transferencias=[];try{transferencias=await DB.getE(eid,'transferencias');}catch(e){}
+  var traspasosCaja=[];try{traspasosCaja=await DB.getE(eid,'traspasos_caja');}catch(e){}
+  var retiros=[];try{retiros=await DB.getE(eid,'retiros');}catch(e){}
+  var cajasAll2=await DB.getE(eid,'cajas');
 
   // Movimientos: unificamos todo en una lista con bancoId
   const movs=[];
@@ -3362,6 +3372,21 @@ async function renderTesoreria(){
     movs.push({id:t.id+'__out',_tsfId:t.id,fecha:t.fecha,tipo:'Transferencia',subtipo:'Egreso',numero:t.numero,importe:t.importe,dir:'out',fpId:'',bancoId:t.bancoOrigenId,cajaId:'',ref:t.bancoDestinoId,entidad:null,_bOrig:bOrig,_bDest:bDest,tabla:'transferencias',_esTransf:true});
     movs.push({id:t.id+'__in',_tsfId:t.id,fecha:t.fecha,tipo:'Transferencia',subtipo:'Ingreso',numero:t.numero,importe:t.importe,dir:'in',fpId:'',bancoId:t.bancoDestinoId,cajaId:'',ref:t.bancoOrigenId,entidad:null,_bOrig:bOrig,_bDest:bDest,tabla:'transferencias',_esTransf:true});
   });
+  // Retiros: un único movimiento de egreso
+  retiros.forEach(function(r){
+    var bk=bancos.find(x=>x.id===r.bancoId);
+    var cj=cajasAll2.find(x=>x.id===r.cajaId);
+    movs.push({id:r.id,_retId:r.id,fecha:r.fecha,tipo:'Retiro',subtipo:'Retiro',numero:r.numero,importe:r.importe,dir:'out',fpId:'',bancoId:r.bancoId||'',cajaId:r.cajaId||'',ref:'',entidad:null,_persona:r.persona,_bk:bk,_cj:cj,tabla:'retiros',_esRetiro:true});
+  });
+
+  // Traspasos entre cajas: dos movimientos por traspaso
+  traspasosCaja.forEach(function(t){
+    var cOrig=cajasAll2.find(x=>x.id===t.cajaOrigenId);
+    var cDest=cajasAll2.find(x=>x.id===t.cajaDestinoId);
+    movs.push({id:t.id+'__out',_tspId:t.id,fecha:t.fecha,tipo:'Traspaso',subtipo:'Egreso',numero:t.numero,importe:t.importe,dir:'out',fpId:'',bancoId:'',cajaId:t.cajaOrigenId,ref:t.cajaDestinoId,entidad:null,_cOrig:cOrig,_cDest:cDest,tabla:'traspasos_caja',_esTraspaso:true});
+    movs.push({id:t.id+'__in',_tspId:t.id,fecha:t.fecha,tipo:'Traspaso',subtipo:'Ingreso',numero:t.numero,importe:t.importe,dir:'in',fpId:'',bancoId:'',cajaId:t.cajaDestinoId,ref:t.cajaOrigenId,entidad:null,_cOrig:cOrig,_cDest:cDest,tabla:'traspasos_caja',_esTraspaso:true});
+  });
+
   movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
 
   // Aplicar filtros
@@ -3376,16 +3401,33 @@ async function renderTesoreria(){
   });
 
   _movsFiltGlobal=movsFilt;
+  _movsFiltSaldoInicial=0;
+
+  // Saldo inicial: movimientos anteriores a _tesDesde con los mismos filtros de banco/caja/fp
+  var saldoInicial=0;
+  if(_tesDesde){
+    var movsAnt=movs.filter(function(m){
+      if(m.fecha>=_tesDesde)return false;
+      if(_tesBanco&&m.bancoId!==_tesBanco)return false;
+      if(_tesCaja&&m.cajaId!==_tesCaja)return false;
+      if(_tesFP&&m.fpId!==_tesFP)return false;
+      if(_tesTipo&&m.tipo!==_tesTipo)return false;
+      return true;
+    });
+    saldoInicial=movsAnt.reduce(function(s,m){return s+(m.dir==='in'?m.importe:-m.importe);},0);
+    _movsFiltSaldoInicial=saldoInicial;
+  }
+
   const totalIn=movsFilt.filter(m=>m.dir==='in').reduce((s,m)=>s+m.importe,0);
   const totalOut=movsFilt.filter(m=>m.dir==='out').reduce((s,m)=>s+m.importe,0);
-  const saldo=totalIn-totalOut;
+  const saldo=saldoInicial+totalIn-totalOut;
 
   // Proyección: facturas CC pendientes
   const fvPend=(await DB.getE(eid,'facturas_venta')).filter(f=>f.tipo==='cc'&&f.estado!=='cobrada');
   const fcPend=(await DB.getE(eid,'facturas_compra')).filter(f=>f.tipo==='cc'&&f.estado!=='pagada');
 
   var bancosOpts=bancos.map(function(b){return '<option value="'+b.id+'"'+(_tesBanco===b.id?' selected':'')+'>'+esc(b.nombre)+'</option>';}).join('');
-  const cajasAll=await DB.getE(eid,'cajas');
+  const cajasAll=cajasAll2;
   _movsFiltFps=fps;_movsFiltBancos=bancos;_movsFiltCajas=cajasAll;
   var cajasOpts=cajasAll.filter(x=>x.activo).map(function(c){return '<option value="'+c.id+'"'+(_tesCaja===c.id?' selected':'')+'>'+esc(c.nombre)+'</option>';}).join('');
   var fpOpts=fps.map(function(fp){return '<option value="'+fp.id+'"'+(_tesFP===fp.id?' selected':'')+'>'+esc(fp.nombre)+'</option>';}).join('');
@@ -3400,15 +3442,23 @@ async function renderTesoreria(){
       var dstNombre=m._bDest?esc(m._bDest.nombre):'?';
       entNombre=oriNombre+' → '+dstNombre;
       destino=m.dir==='out'?oriNombre:dstNombre;
+    } else if(m._esTraspaso){
+      var cOriNombre=m._cOrig?esc(m._cOrig.nombre):'?';
+      var cDstNombre=m._cDest?esc(m._cDest.nombre):'?';
+      entNombre=cOriNombre+' → '+cDstNombre;
+      destino=m.dir==='out'?cOriNombre:cDstNombre;
+    } else if(m._esRetiro){
+      entNombre=m._persona?esc(m._persona):'—';
+      destino=m._bk?esc(m._bk.nombre):m._cj?esc(m._cj.nombre):'—';
     } else {
       entNombre=m.entidad?esc(m.entidad.nombre):'—';
       destino=bk?esc(bk.nombre):cj?esc(cj.nombre):'—';
     }
     var printId=m.imprimibleId||m.id;
-    var baseId=m._recId||m._tsfId||m.id;
+    var baseId=m._recId||m._tsfId||m._tspId||m._retId||m.id;
     var printBtn=m.imprimible==='recibo'?'<button class="btn btn-ghost btn-sm btn-icon" title="Imprimir recibo" onclick="imprimirComprobante(\'recibo\',\''+printId+'\')">🖨️</button>':'';
-    // Para transferencias: botón eliminar solo en el movimiento 'out' (evitar doble borrado)
-    var delBtn=m._esTransf&&m.dir==='in'?'':
+    // Para transferencias y traspasos: botón eliminar solo en movimiento 'out' (evitar doble borrado)
+    var delBtn=(m._esTransf||m._esTraspaso)&&m.dir==='in'?'':
       '<button class="btn btn-ghost btn-sm btn-icon" title="Eliminar" onclick="eliminarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">🗑️</button>';
     var editBtn=(m.tabla==='recibos_cobro'||m.tabla==='ordenes_pago')?'<button class="btn btn-ghost btn-sm btn-icon" title="Editar" onclick="editarMovTesoreria(\''+m.tabla+'\',\''+baseId+'\')">✏️</button>':'';
     return '<tr>'
@@ -3416,7 +3466,7 @@ async function renderTesoreria(){
       +'<td>'+(m._esTransf?'<span style="color:var(--accent)">⇄ '+esc(m.subtipo)+'</span>':esc(m.subtipo))+'</td>'
       +'<td class="td-mono">'+esc(m.numero)+'</td>'
       +'<td>'+entNombre+'</td>'
-      +'<td>'+(fp?esc(fp.nombre):m._esTransf?'<span style="color:var(--text2);font-size:12px">Transferencia</span>':'—')+'</td>'
+      +'<td>'+(fp?esc(fp.nombre):m._esTransf?'<span style="color:var(--text2);font-size:12px">Transferencia</span>':m._esTraspaso?'<span style="color:var(--text2);font-size:12px">Traspaso caja</span>':m._esRetiro?'<span style="color:var(--text2);font-size:12px">Retiro</span>':'—')+'</td>'
       +'<td>'+destino+'</td>'
       +'<td class="td-mono td-r" style="color:var(--green)">'+(m.dir==='in'?fmtARS(m.importe):'—')+'</td>'
       +'<td class="td-mono td-r" style="color:var(--red)">'+(m.dir==='out'?fmtARS(m.importe):'—')+'</td>'
@@ -3432,16 +3482,16 @@ async function renderTesoreria(){
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Banco</label><select onchange="_tesBanco=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option>${bancosOpts}</select></div>
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Caja</label><select onchange="_tesCaja=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todas</option>${cajasOpts}</select></div>
         <div class="fg" style="margin:0;flex:1;min-width:140px"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Forma de pago</label><select onchange="_tesFP=this.value;renderTesoreria()" style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todas</option>${fpOpts}</select></div>
-        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Tipo</label><select onchange="_tesTipo=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option><option value="Cobro"${_tesTipo==='Cobro'?' selected':''}>Cobranzas</option><option value="Pago"${_tesTipo==='Pago'?' selected':''}>Pagos</option><option value="Transferencia"${_tesTipo==='Transferencia'?' selected':''}>Transferencias</option></select></div>
+        <div class="fg" style="margin:0;flex:0 0 auto"><label style="display:block;font-size:12px;font-weight:500;color:var(--text2);margin-bottom:4px">Tipo</label><select onchange="_tesTipo=this.value;renderTesoreria()" style="padding:7px 10px;border:1px solid var(--border);border-radius:var(--r-sm);outline:none;font-family:var(--font)"><option value="">Todos</option><option value="Cobro"${_tesTipo==='Cobro'?' selected':''}>Cobranzas</option><option value="Pago"${_tesTipo==='Pago'?' selected':''}>Pagos</option><option value="Transferencia"${_tesTipo==='Transferencia'?' selected':''}>Transferencias</option><option value="Traspaso"${_tesTipo==='Traspaso'?' selected':''}>Traspasos caja</option><option value="Retiro"${_tesTipo==='Retiro'?' selected':''}>Retiros</option></select></div>
         <div class="fg" style="margin:0;flex:0 0 auto;align-self:flex-end"><button class="btn btn-ghost btn-sm" onclick="_tesDesde='';_tesHasta='';_tesBanco='';_tesCaja='';_tesFP='';_tesTipo='';renderTesoreria()">↺ Limpiar</button></div>
       </div>
     </div>
 
     <div class="g4 mb24">
-      <div class="stat-card"><div class="stat-lbl">Ingresos filtrados</div><div class="stat-val" style="color:var(--green);font-size:18px">${fmtARS(totalIn)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Egresos filtrados</div><div class="stat-val" style="color:var(--red);font-size:18px">${fmtARS(totalOut)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Saldo neto</div><div class="stat-val" style="color:${saldo>=0?'var(--green)':'var(--red)'};font-size:18px">${fmtARS(saldo)}</div></div>
-      <div class="stat-card"><div class="stat-lbl">Movimientos</div><div class="stat-val" style="color:var(--accent);font-size:18px">${movsFilt.length}</div></div>
+      ${_tesDesde?`<div class="stat-card"><div class="stat-lbl">Saldo inicial</div><div class="stat-val" style="color:${saldoInicial>=0?'var(--green)':'var(--red)'};font-size:18px">${fmtARS(saldoInicial)}</div></div>`:''}
+      <div class="stat-card"><div class="stat-lbl">Ingresos del período</div><div class="stat-val" style="color:var(--green);font-size:18px">${fmtARS(totalIn)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Egresos del período</div><div class="stat-val" style="color:var(--red);font-size:18px">${fmtARS(totalOut)}</div></div>
+      <div class="stat-card"><div class="stat-lbl">Saldo final</div><div class="stat-val" style="color:${saldo>=0?'var(--green)':'var(--red)'};font-size:18px">${fmtARS(saldo)}</div></div>
     </div>
 
     <div class="toolbar mb16" style="padding:0">
@@ -3450,6 +3500,8 @@ async function renderTesoreria(){
       <button class="btn btn-secondary btn-sm" onclick="abrirCobroDirecto()">+ Registrar cobro</button>
       <button class="btn btn-secondary btn-sm" onclick="abrirPagoDirecto()">+ Registrar pago</button>
       <button class="btn btn-secondary btn-sm" onclick="abrirTransferenciaBancaria()">⇄ Transferencia bancaria</button>
+      <button class="btn btn-secondary btn-sm" onclick="abrirTraspasoCaja()">⇄ Traspaso entre cajas</button>
+      <button class="btn btn-secondary btn-sm" onclick="abrirRetiro()">↑ Retiro</button>
     </div>
 
     <div class="card mb24">
@@ -3764,6 +3816,112 @@ async function saveTransferenciaBancaria(){
   hideLoading();
   closeModal();
   toast('Transferencia registrada · '+numero,'success');
+  renderTesoreria();
+}
+
+async function abrirTraspasoCaja(){
+  const eid=_empresa.id;
+  const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
+  if(cajas.length<2){toast('Se necesitan al menos 2 cajas activas para realizar un traspaso.','error');return;}
+  var cjOpts=cajas.map(function(c){return '<option value="'+c.id+'">'+esc(c.nombre)+'</option>';}).join('');
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  const numTsp=nums.TSP||1;
+  const numero='TSP-'+String(numTsp).padStart(5,'0');
+  openModal('Traspaso entre cajas',`
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Registrá el movimiento de efectivo entre dos cajas propias. Se generará un egreso en la caja origen y un ingreso en la caja destino.</p>
+    <div class="row2">
+      <div class="fg"><label>N° Traspaso</label><input value="${numero}" readonly></div>
+      <div class="fg"><label>Fecha *</label><input id="tsp-f" type="date" value="${today()}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Caja origen (egreso) *</label><select id="tsp-orig"><option value="">Seleccioná...</option>${cjOpts}</select></div>
+      <div class="fg"><label>Caja destino (ingreso) *</label><select id="tsp-dest"><option value="">Seleccioná...</option>${cjOpts}</select></div>
+    </div>
+    <div class="fg"><label>Importe *</label><input id="tsp-imp" type="number" step="0.01" placeholder="0.00"></div>
+    <div class="fg"><label>Observaciones</label><textarea id="tsp-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar traspaso',cls:'btn-primary',fn:'saveTraspasoCaja()'}]);
+}
+
+async function saveTraspasoCaja(){
+  const eid=_empresa.id;
+  const fecha=document.getElementById('tsp-f').value;
+  if(!fecha){toast('La fecha es obligatoria','error');return;}
+  const cajaOrigenId=document.getElementById('tsp-orig').value;
+  if(!cajaOrigenId){toast('Seleccioná la caja origen','error');return;}
+  const cajaDestinoId=document.getElementById('tsp-dest').value;
+  if(!cajaDestinoId){toast('Seleccioná la caja destino','error');return;}
+  if(cajaOrigenId===cajaDestinoId){toast('La caja origen y destino no pueden ser la misma','error');return;}
+  const importe=parseFloat(document.getElementById('tsp-imp').value)||0;
+  if(!importe||importe<=0){toast('El importe debe ser mayor a cero','error');return;}
+  if(await isMesCerrado(fecha)){toast('El período '+fecha.slice(0,7)+' está cerrado. No se pueden registrar operaciones.','error');return;}
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  if(!nums.TSP)nums.TSP=1;
+  const numero='TSP-'+String(nums.TSP).padStart(5,'0');
+  nums.TSP++;
+  await DB.setCfg(eid,{nums});
+  const tsp={id:genId(),numero,fecha,cajaOrigenId,cajaDestinoId,importe,
+    observaciones:document.getElementById('tsp-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando traspaso...');
+  await DB.upsertItem(eid,'traspasos_caja',tsp);
+  hideLoading();
+  closeModal();
+  toast('Traspaso registrado · '+numero,'success');
+  renderTesoreria();
+}
+
+async function abrirRetiro(){
+  const eid=_empresa.id;
+  const bancos=(await DB.getE(eid,'bancos')).filter(x=>x.activo);
+  const cajas=(await DB.getE(eid,'cajas')).filter(x=>x.activo);
+  if(!bancos.length&&!cajas.length){toast('No hay bancos ni cajas activas.','error');return;}
+  var bkOpts=bancos.map(function(b){return '<option value="bk__'+b.id+'">🏦 '+esc(b.nombre)+'</option>';}).join('');
+  var cjOpts=cajas.map(function(c){return '<option value="cj__'+c.id+'">💵 '+esc(c.nombre)+'</option>';}).join('');
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  const numRet=nums.RET||1;
+  const numero='RET-'+String(numRet).padStart(5,'0');
+  openModal('Registrar retiro',`
+    <p style="font-size:12px;color:var(--text2);margin-bottom:14px">Registrá la extracción de fondos de un banco o caja. Quedará como egreso en el origen seleccionado.</p>
+    <div class="row2">
+      <div class="fg"><label>N° Retiro</label><input value="${numero}" readonly></div>
+      <div class="fg"><label>Fecha *</label><input id="ret-f" type="date" value="${today()}"></div>
+    </div>
+    <div class="row2">
+      <div class="fg"><label>Origen (banco o caja) *</label><select id="ret-orig"><option value="">Seleccioná...</option>${bkOpts?'<optgroup label="Bancos">'+bkOpts+'</optgroup>':''}${cjOpts?'<optgroup label="Cajas">'+cjOpts+'</optgroup>':''}</select></div>
+      <div class="fg"><label>Importe *</label><input id="ret-imp" type="number" step="0.01" placeholder="0.00"></div>
+    </div>
+    <div class="fg"><label>Retirado por *</label><input id="ret-persona" type="text" placeholder="Nombre de quien retira"></div>
+    <div class="fg"><label>Observaciones</label><textarea id="ret-obs" rows="2"></textarea></div>
+  `,[{lbl:'Cancelar',cls:'btn-secondary',fn:'closeModal()'},{lbl:'Registrar retiro',cls:'btn-primary',fn:'saveRetiro()'}]);
+}
+
+async function saveRetiro(){
+  const eid=_empresa.id;
+  const fecha=document.getElementById('ret-f').value;
+  if(!fecha){toast('La fecha es obligatoria','error');return;}
+  const origenVal=document.getElementById('ret-orig').value;
+  if(!origenVal){toast('Seleccioná el origen','error');return;}
+  const persona=document.getElementById('ret-persona').value.trim();
+  if(!persona){toast('El nombre de quien retira es obligatorio','error');return;}
+  const importe=parseFloat(document.getElementById('ret-imp').value)||0;
+  if(!importe||importe<=0){toast('El importe debe ser mayor a cero','error');return;}
+  if(await isMesCerrado(fecha)){toast('El período '+fecha.slice(0,7)+' está cerrado. No se pueden registrar operaciones.','error');return;}
+  const esBanco=origenVal.startsWith('bk__');
+  const bancoId=esBanco?origenVal.replace('bk__',''):'';
+  const cajaId=!esBanco?origenVal.replace('cj__',''):'';
+  const cfg=await DB.cfg(eid);const nums=cfg.nums||{};
+  if(!nums.RET)nums.RET=1;
+  const numero='RET-'+String(nums.RET).padStart(5,'0');
+  nums.RET++;
+  await DB.setCfg(eid,{nums});
+  const ret={id:genId(),numero,fecha,bancoId,cajaId,importe,persona,
+    observaciones:document.getElementById('ret-obs').value.trim(),
+    fechaCreacion:new Date().toISOString()};
+  showLoading('Registrando retiro...');
+  await DB.upsertItem(eid,'retiros',ret);
+  hideLoading();
+  closeModal();
+  toast('Retiro registrado · '+numero+' · '+persona,'success');
   renderTesoreria();
 }
 
@@ -4180,6 +4338,9 @@ function exportarExcelTesoreria(){
   try{
     if(!_movsFiltGlobal.length){toast('Sin movimientos para exportar','error');return}
     var aoa=[['Fecha','Tipo','N°','Entidad','Forma de pago','Banco/Caja','Ingreso','Egreso']];
+    if(_tesDesde&&_movsFiltSaldoInicial!==undefined){
+      aoa.push([_tesDesde,'Saldo inicial','','','','',_movsFiltSaldoInicial>=0?_movsFiltSaldoInicial:0,_movsFiltSaldoInicial<0?Math.abs(_movsFiltSaldoInicial):0]);
+    }
     _movsFiltGlobal.forEach(function(m){
       var fp=_movsFiltFps.find(function(x){return x.id===m.fpId;});
       var bk=_movsFiltBancos.find(function(x){return x.id===m.bancoId;});
@@ -4189,6 +4350,12 @@ function exportarExcelTesoreria(){
       if(m._esTransf){
         fpNombre='Transferencia';
         bancoCajaNombre=m.dir==='out'?(m._bOrig?m._bOrig.nombre:'?'):(m._bDest?m._bDest.nombre:'?');
+      } else if(m._esTraspaso){
+        fpNombre='Traspaso caja';
+        bancoCajaNombre=m.dir==='out'?(m._cOrig?m._cOrig.nombre:'?'):(m._cDest?m._cDest.nombre:'?');
+      } else if(m._esRetiro){
+        fpNombre='Retiro';
+        bancoCajaNombre=m._bk?m._bk.nombre:m._cj?m._cj.nombre:'—';
       } else {
         fpNombre=fp?fp.nombre:'';
         bancoCajaNombre=bk?bk.nombre:cj?cj.nombre:'—';
@@ -4197,7 +4364,7 @@ function exportarExcelTesoreria(){
         m.fecha,
         m.subtipo,
         m.numero,
-        m.entidad?m.entidad.nombre:(m._esTransf?(m._bOrig?m._bOrig.nombre+' → '+(m._bDest?m._bDest.nombre:'?'):'—'):'—'),
+        m.entidad?m.entidad.nombre:m._esTransf?(m._bOrig?m._bOrig.nombre+' → '+(m._bDest?m._bDest.nombre:'?'):'—'):m._esTraspaso?(m._cOrig?m._cOrig.nombre+' → '+(m._cDest?m._cDest.nombre:'?'):'—'):m._esRetiro?(m._persona||'—'):'—',
         fpNombre,
         bancoCajaNombre,
         m.dir==='in'?m.importe:0,
@@ -4236,15 +4403,20 @@ async function exportarExcelInformesFinanciero(){
     const fps=await DB.getE(eid,'formas_pago');
     const clientes=await DB.getE(eid,'clientes');
     const provs=await DB.getE(eid,'proveedores');
+    const rubros=await DB.getE(eid,'rubros');
     const movs=[];
-    recCob.filter(r=>r.fecha>=desde&&r.fecha<=hasta).forEach(r=>{const cl=clientes.find(x=>x.id===r.clienteId);movs.push({fecha:r.fecha,desc:'Cobro cliente'+(cl?' · '+cl.nombre:''),numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId});});
-    fvCob.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);movs.push({fecha:f.fecha,desc:'Venta contado'+(cl?' · '+cl.nombre:''),numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId});});
-    ordPago.filter(o=>o.fecha>=desde&&o.fecha<=hasta).forEach(o=>{const pv=provs.find(x=>x.id===o.proveedorId);movs.push({fecha:o.fecha,desc:'Pago proveedor'+(pv?' · '+pv.nombre:''),numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId});});
-    fcPag.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);movs.push({fecha:f.fecha,desc:'Compra contado'+(pv?' · '+pv.nombre:''),numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId});});
+    recCob.filter(r=>r.fecha>=desde&&r.fecha<=hasta).forEach(r=>{const cl=clientes.find(x=>x.id===r.clienteId);movs.push({fecha:r.fecha,desc:'Cobro cliente'+(cl?' · '+cl.nombre:''),numero:r.numero,importe:r.importe,dir:'in',fpId:r.formaPagoId,rubroId:''});});
+    fvCob.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);movs.push({fecha:f.fecha,desc:'Venta contado'+(cl?' · '+cl.nombre:''),numero:f.numero,importe:f.total,dir:'in',fpId:f.formaPagoId,rubroId:f.rubroId||''});});
+    ordPago.filter(o=>o.fecha>=desde&&o.fecha<=hasta).forEach(o=>{const pv=provs.find(x=>x.id===o.proveedorId);movs.push({fecha:o.fecha,desc:'Pago proveedor'+(pv?' · '+pv.nombre:''),numero:o.numero,importe:o.importe,dir:'out',fpId:o.formaPagoId,rubroId:o.rubroId||''});});
+    fcPag.filter(f=>f.fecha>=desde&&f.fecha<=hasta).forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);movs.push({fecha:f.fecha,desc:'Compra contado'+(pv?' · '+pv.nombre:''),numero:f.numero,importe:f.total,dir:'out',fpId:f.formaPagoId,rubroId:f.rubroId||''});});
     movs.sort((a,b)=>a.fecha>b.fecha?-1:1);
     var aoa=[['Informe Financiero'],['Período: '+desde+' al '+hasta],[],
-      ['Fecha','Descripción','N°','Forma de pago','Ingreso','Egreso']];
-    movs.forEach(m=>{const fp=fps.find(x=>x.id===m.fpId);aoa.push([m.fecha,m.desc,m.numero,fp?fp.nombre:'—',m.dir==='in'?m.importe:0,m.dir==='out'?m.importe:0]);});
+      ['Fecha','Descripción','N°','Rubro','Forma de pago','Ingreso','Egreso']];
+    movs.forEach(function(m){
+      const fp=fps.find(x=>x.id===m.fpId);
+      const rb=rubros.find(x=>x.id===m.rubroId);
+      aoa.push([m.fecha,m.desc,m.numero,rb?rb.nombre:'—',fp?fp.nombre:'—',m.dir==='in'?m.importe:0,m.dir==='out'?m.importe:0]);
+    });
     const wb=XLSX.utils.book_new();
     const ws=XLSX.utils.aoa_to_sheet(aoa);
     XLSX.utils.book_append_sheet(wb,ws,'Financiero');
@@ -4261,14 +4433,23 @@ async function exportarExcelInformesEconomico(){
     const fc=(await DB.getE(eid,'facturas_compra')).filter(f=>f.fecha>=desde&&f.fecha<=hasta);
     const clientes=await DB.getE(eid,'clientes');
     const provs=await DB.getE(eid,'proveedores');
+    const rubros=await DB.getE(eid,'rubros');
     const totalVentas=fv.reduce((s,f)=>s+f.total,0);
     const totalCompras=fc.reduce((s,f)=>s+f.total,0);
     var aoa=[['Informe Económico'],['Período: '+desde+' al '+hasta],[],
       ['Resumen'],['Total Ventas',totalVentas],['Total Compras',totalCompras],['Resultado bruto',totalVentas-totalCompras],[],
-      ['Ventas'],['N°','Fecha','Cliente','Total','Estado']];
-    fv.forEach(f=>{const cl=clientes.find(x=>x.id===f.clienteId);aoa.push([f.numero,f.fecha,cl?cl.nombre:'—',f.total,f.estado]);});
-    aoa.push([]);aoa.push(['Compras']);aoa.push(['N°','Fecha','Proveedor','Total','Estado']);
-    fc.forEach(f=>{const pv=provs.find(x=>x.id===f.proveedorId);aoa.push([f.numero,f.fecha,pv?pv.nombre:'—',f.total,f.estado]);});
+      ['Ventas'],['N°','Fecha','Cliente','Rubro','Total','Estado']];
+    fv.forEach(function(f){
+      const cl=clientes.find(x=>x.id===f.clienteId);
+      const rb=rubros.find(x=>x.id===f.rubroId);
+      aoa.push([f.numero,f.fecha,cl?cl.nombre:'—',rb?rb.nombre:'—',f.total,f.estado]);
+    });
+    aoa.push([]);aoa.push(['Compras']);aoa.push(['N°','Fecha','Proveedor','Rubro','Total','Estado']);
+    fc.forEach(function(f){
+      const pv=provs.find(x=>x.id===f.proveedorId);
+      const rb=rubros.find(x=>x.id===f.rubroId);
+      aoa.push([f.numero,f.fecha,pv?pv.nombre:'—',rb?rb.nombre:'—',f.total,f.estado]);
+    });
     const wb=XLSX.utils.book_new();
     const ws=XLSX.utils.aoa_to_sheet(aoa);
     XLSX.utils.book_append_sheet(wb,ws,'Económico');
